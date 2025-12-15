@@ -1,0 +1,170 @@
+# AWS SAM 模板文件
+# 用于部署 Lambda 函数到 AWS
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 服装图片管理系统 - Lambda 后端
+
+# 全局配置
+Globals:
+  Function:
+    Runtime: nodejs18.x
+    MemorySize: 512
+    Timeout: 30
+    Environment:
+      Variables:
+        S3_BUCKET_NAME: !Ref ImagesBucket
+        SIGNED_URL_EXPIRATION: '3600'
+        TZ: 'Asia/Tokyo'
+
+# 参数
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - dev
+      - prod
+    Description: 部署环境
+
+# 资源定义
+Resources:
+  # S3 存储桶（私有）
+  ImagesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'vrc-tryon-images-${Environment}'
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins:
+              - '*'
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - DELETE
+              - HEAD
+            AllowedHeaders:
+              - '*'
+            MaxAge: 3000
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Lambda 上传处理函数
+  PFTryonUploadTool:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'PFTryonUploadTool-${Environment}'
+      Handler: index.handler
+      CodeUri: PFTryonUploadTool/
+      Description: PF Tryon - 处理图片上传到S3
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref ImagesBucket
+      Events:
+        UploadApi:
+          Type: Api
+          Properties:
+            Path: /upload
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        UploadOptions:
+          Type: Api
+          Properties:
+            Path: /upload
+            Method: OPTIONS
+            RestApiId: !Ref ApiGateway
+
+  # Lambda 列表获取函数
+  PFTryonGetListTool:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'PFTryonGetListTool-${Environment}'
+      Handler: index.handler
+      CodeUri: PFTryonGetListTool/
+      Description: PF Tryon - 获取图片列表
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref ImagesBucket
+      Events:
+        ListApi:
+          Type: Api
+          Properties:
+            Path: /list
+            Method: GET
+            RestApiId: !Ref ApiGateway
+        ListOptions:
+          Type: Api
+          Properties:
+            Path: /list
+            Method: OPTIONS
+            RestApiId: !Ref ApiGateway
+
+  # Lambda 删除处理函数
+  PFTryonDeleteTool:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'PFTryonDeleteTool-${Environment}'
+      Handler: index.handler
+      CodeUri: PFTryonDeleteTool/
+      Description: PF Tryon - 删除S3中的图片
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref ImagesBucket
+      Events:
+        DeleteApi:
+          Type: Api
+          Properties:
+            Path: /delete
+            Method: POST
+            RestApiId: !Ref ApiGateway
+        DeleteOptions:
+          Type: Api
+          Properties:
+            Path: /delete
+            Method: OPTIONS
+            RestApiId: !Ref ApiGateway
+
+  # API Gateway
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub 'vrc-tryon-api-${Environment}'
+      StageName: !Ref Environment
+      EndpointConfiguration:
+        Type: REGIONAL
+      Cors:
+        AllowOrigin: "'*'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowMethods: "'GET,POST,OPTIONS,DELETE'"
+        MaxAge: "'3000'"
+
+# 输出
+Outputs:
+  ApiUrl:
+    Description: API Gateway 端点 URL
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiUrl'
+
+  BucketName:
+    Description: S3 存储桶名称
+    Value: !Ref ImagesBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketName'
+
+  PFTryonUploadToolArn:
+    Description: 上传函数 ARN
+    Value: !GetAtt PFTryonUploadTool.Arn
+
+  PFTryonGetListToolArn:
+    Description: 列表函数 ARN
+    Value: !GetAtt PFTryonGetListTool.Arn
+
+  PFTryonDeleteToolArn:
+    Description: 删除函数 ARN
+    Value: !GetAtt PFTryonDeleteTool.Arn
+

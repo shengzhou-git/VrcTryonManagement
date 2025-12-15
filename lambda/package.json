@@ -1,0 +1,17 @@
+{
+  "name": "vrc-tryon-lambda",
+  "version": "1.0.0",
+  "description": "AWS Lambda 函数用于处理服装图片上传（私有存储桶）",
+  "type": "module",
+  "scripts": {
+    "package": "zip -r function.zip PFTryonUploadTool PFTryonGetListTool PFTryonDeleteTool node_modules package.json"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.504.0",
+    "@aws-sdk/s3-request-presigner": "^3.504.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
+
