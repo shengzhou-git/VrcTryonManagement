@@ -105,35 +105,83 @@ export default function UploadPage() {
 
     setIsUploading(true)
 
-    // 模拟上传过程（实际应该调用API）
-    for (let i = 0; i < files.length; i++) {
-      const fileId = files[i].id
-      
-      // 更新为上传中状态
-      setFiles(prev => prev.map(f => 
-        f.id === fileId ? { ...f, status: 'uploading' as const } : f
-      ))
+    try {
+      // 将所有文件标记为上传中
+      setFiles(prev => prev.map(f => ({
+        ...f,
+        status: 'uploading' as const,
+        progress: 0
+      })))
 
-      // 模拟上传进度
-      for (let progress = 0; progress <= 100; progress += 10) {
-        await new Promise(resolve => setTimeout(resolve, 100))
-        setFiles(prev => prev.map(f => 
-          f.id === fileId ? { ...f, progress } : f
-        ))
+      // 调用真实的上传 API
+      const { uploadImages } = await import('@/lib/api')
+      
+      // 准备文件列表
+      const fileList = files.map(f => f.file)
+      
+      // 开始上传（显示进度）
+      const uploadPromise = uploadImages(brandName, fileList)
+      
+      // 模拟进度更新（实际上传是在后台进行）
+      const progressInterval = setInterval(() => {
+        setFiles(prev => prev.map(f => {
+          if (f.status === 'uploading' && f.progress < 90) {
+            return { ...f, progress: Math.min(f.progress + 10, 90) }
+          }
+          return f
+        }))
+      }, 300)
+
+      // 等待上传完成
+      const response = await uploadPromise
+      
+      // 清除进度更新
+      clearInterval(progressInterval)
+
+      // 根据结果更新状态
+      if (response.results) {
+        setFiles(prev => prev.map(f => {
+          const result = response.results.find(r => r.fileName === f.file.name)
+          if (result) {
+            return {
+              ...f,
+              status: result.success ? 'success' as const : 'error' as const,
+              progress: 100
+            }
+          }
+          return { ...f, status: 'success' as const, progress: 100 }
+        }))
+      } else {
+        // 所有文件标记为成功
+        setFiles(prev => prev.map(f => ({
+          ...f,
+          status: 'success' as const,
+          progress: 100
+        })))
       }
 
-      // 标记为成功
-      setFiles(prev => prev.map(f => 
-        f.id === fileId ? { ...f, status: 'success' as const, progress: 100 } : f
-      ))
-    }
+      // 显示成功消息
+      alert(`上传完成！成功：${response.summary?.success || files.length}，失败：${response.summary?.failed || 0}`)
+      
+      // 延迟跳转到图片一览页面
+      setTimeout(() => {
+        router.push('/gallery')
+      }, 1500)
 
-    setIsUploading(false)
-    
-    // 延迟跳转到图片一览页面
-    setTimeout(() => {
-      router.push('/gallery')
-    }, 1000)
+    } catch (error) {
+      console.error('Upload error:', error)
+      
+      // 将所有文件标记为失败
+      setFiles(prev => prev.map(f => ({
+        ...f,
+        status: 'error' as const,
+        progress: 0
+      })))
+      
+      alert(`上传失败：${error instanceof Error ? error.message : '未知错误'}`)
+    } finally {
+      setIsUploading(false)
+    }
   }
 
   return (

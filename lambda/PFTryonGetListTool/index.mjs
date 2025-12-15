@@ -35,12 +35,20 @@ export const handler = async (event) => {
   }
 
   try {
-    // 获取查询参数
-    const queryParams = event.queryStringParameters || {};
-    const brand = queryParams.brand;
+    // 解析请求体（现在使用 POST）
+    let body = {};
+    if (event.body) {
+      try {
+        body = JSON.parse(event.body);
+      } catch (parseError) {
+        console.error(`[PFTryonGetListTool] 解析请求体失败:`, parseError);
+      }
+    }
+    
+    const brand = body.brand;
     const prefix = brand ? `${brand}/` : '';
 
-    console.log(`[PFTryonGetListTool] 查询参数 - 品牌筛选: ${brand || '全部'}`);
+    console.log(`[PFTryonGetListTool] 请求参数 - 品牌筛选: ${brand || '全部'}`);
     console.log(`[PFTryonGetListTool] S3 前缀: ${prefix || '(根目录)'}`);
 
     // 列出 S3 对象
@@ -90,10 +98,25 @@ export const handler = async (event) => {
 
         console.log(`[PFTryonGetListTool] [${i + 1}/${objectCount}] 生成预签名 URL 成功`);
 
+        // 解码元数据（从 Base64 解码，支持中日文）
+        let decodedBrand;
+        try {
+          decodedBrand = metadata.Metadata?.brand 
+            ? decodeBase64Metadata(metadata.Metadata.brand) 
+            : safeDecodeURIComponent(objectBrand);
+        } catch (error) {
+          console.warn(`[PFTryonGetListTool] 品牌名解码失败: ${error.message}, 使用原始值`);
+          decodedBrand = objectBrand;
+        }
+        
+        const decodedFileName = metadata.Metadata?.originalname 
+          ? decodeBase64Metadata(metadata.Metadata.originalname) 
+          : fileName;
+
         images.push({
           id: object.ETag.replace(/"/g, ''),
-          name: metadata.Metadata?.originalname || fileName,
-          brand: metadata.Metadata?.brand || objectBrand,
+          name: decodedFileName,
+          brand: decodedBrand,
           url: signedUrl,
           key: object.Key,
           size: object.Size,
@@ -148,6 +171,38 @@ export const handler = async (event) => {
     };
   }
 };
+
+/**
+ * 解码 Base64 编码的元数据
+ * 如果解码失败，返回原始值
+ */
+function decodeBase64Metadata(base64String) {
+  try {
+    if (!base64String) {
+      return '';
+    }
+    return Buffer.from(base64String, 'base64').toString('utf8');
+  } catch (error) {
+    console.warn(`[PFTryonGetListTool] Base64 解码失败: ${error.message}, 返回原始值`);
+    return base64String; // 如果解码失败，返回原始值
+  }
+}
+
+/**
+ * 安全地解码 URL 编码的字符串
+ * 如果解码失败，返回原始值
+ */
+function safeDecodeURIComponent(encodedString) {
+  try {
+    if (!encodedString) {
+      return '';
+    }
+    return decodeURIComponent(encodedString);
+  } catch (error) {
+    console.warn(`[PFTryonGetListTool] URL 解码失败: ${error.message}, 返回原始值`);
+    return encodedString; // 如果解码失败，返回原始值
+  }
+}
 
 /**
  * 获取 CORS 响应头

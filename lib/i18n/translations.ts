@@ -85,12 +85,23 @@ export interface Translations {
   // 图片一览页面
   gallery: {
     title: string
-    totalImages: string
+    totalCount: string // "共 {count} 张图片" 格式
     searchPlaceholder: string
     allBrands: string
     noImages: string
     noImagesDesc: string
+    noImagesYet: string
+    noImagesYetDesc: string
     uploadNow: string
+    refresh: string
+    refreshing: string
+    urlExpiresIn: string
+    minutes: string
+    loadFailed: string
+    deleteConfirm: string
+    deleteSuccess: string
+    deleteFailed: string
+    downloadFailed: string
     imageInfo: {
       brand: string
       size: string
@@ -174,12 +185,23 @@ export const translations: Record<Language, Translations> = {
     },
     gallery: {
       title: '图片一览',
-      totalImages: '张图片',
+      totalCount: '张图片',
       searchPlaceholder: '搜索图片名称或品牌...',
       allBrands: '全部',
       noImages: '没有找到图片',
       noImagesDesc: '尝试调整搜索条件或上传新的图片',
+      noImagesYet: '还没有上传图片',
+      noImagesYetDesc: '立即上传您的第一张图片',
       uploadNow: '立即上传',
+      refresh: '刷新',
+      refreshing: '刷新中',
+      urlExpiresIn: '图片链接有效期：',
+      minutes: '分钟',
+      loadFailed: '加载失败',
+      deleteConfirm: '确定要删除这张图片吗？',
+      deleteSuccess: '删除成功',
+      deleteFailed: '删除失败',
+      downloadFailed: '下载失败，请重试',
       imageInfo: {
         brand: '品牌',
         size: '大小',
@@ -262,12 +284,23 @@ export const translations: Record<Language, Translations> = {
     },
     gallery: {
       title: 'Image Gallery',
-      totalImages: 'images',
+      totalCount: 'images',
       searchPlaceholder: 'Search image name or brand...',
       allBrands: 'All Brands',
       noImages: 'No images found',
       noImagesDesc: 'Try adjusting search criteria or upload new images',
+      noImagesYet: 'No images uploaded yet',
+      noImagesYetDesc: 'Upload your first image now',
       uploadNow: 'Upload Now',
+      refresh: 'Refresh',
+      refreshing: 'Refreshing',
+      urlExpiresIn: 'Image URL expires in:',
+      minutes: 'minutes',
+      loadFailed: 'Load Failed',
+      deleteConfirm: 'Are you sure you want to delete this image?',
+      deleteSuccess: 'Deleted successfully',
+      deleteFailed: 'Delete failed',
+      downloadFailed: 'Download failed, please try again',
       imageInfo: {
         brand: 'Brand',
         size: 'Size',
@@ -350,12 +383,23 @@ export const translations: Record<Language, Translations> = {
     },
     gallery: {
       title: '画像一覧',
-      totalImages: '枚の画像',
+      totalCount: '枚の画像',
       searchPlaceholder: '画像名またはブランドを検索...',
       allBrands: 'すべて',
       noImages: '画像が見つかりません',
       noImagesDesc: '検索条件を調整するか、新しい画像をアップロードしてください',
+      noImagesYet: 'まだ画像がアップロードされていません',
+      noImagesYetDesc: '最初の画像を今すぐアップロード',
       uploadNow: '今すぐアップロード',
+      refresh: '更新',
+      refreshing: '更新中',
+      urlExpiresIn: '画像URLの有効期限：',
+      minutes: '分',
+      loadFailed: '読み込み失敗',
+      deleteConfirm: 'この画像を削除してもよろしいですか？',
+      deleteSuccess: '削除成功',
+      deleteFailed: '削除失敗',
+      downloadFailed: 'ダウンロード失敗、再試行してください',
       imageInfo: {
         brand: 'ブランド',
         size: 'サイズ',

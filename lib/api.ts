@@ -1,8 +1,9 @@
 /**
- * API 客户端 - 与 AWS Lambda 后端通信
+ * API 客户端 - 通过 Next.js API 路由与后端通信
+ * API Key 在服务器端，不会暴露到浏览器
  */
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '';
+const API_BASE_URL = '/api'; // 使用本地 Next.js API 路由
 
 export interface UploadFileData {
   name: string
@@ -38,12 +39,14 @@ export interface ImageItem {
   size: number
   uploadDate: string
   type: string
+  urlExpiresIn?: number
 }
 
 export interface ListImagesResponse {
   images: ImageItem[]
   total: number
   brand: string
+  note?: string
 }
 
 /**
@@ -95,18 +98,17 @@ export async function uploadImages(
  */
 export async function listImages(brand?: string): Promise<ListImagesResponse> {
   try {
-    const params = new URLSearchParams()
+    const body: { brand?: string } = {}
     if (brand && brand !== '全部') {
-      params.append('brand', brand)
+      body.brand = brand
     }
-
-    const url = `${API_BASE_URL}/list${params.toString() ? `?${params.toString()}` : ''}`
     
-    const response = await fetch(url, {
-      method: 'GET',
+    const response = await fetch(`${API_BASE_URL}/list`, {
+      method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
+      body: JSON.stringify(body),
     })
 
     if (!response.ok) {

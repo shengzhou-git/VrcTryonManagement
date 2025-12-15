@@ -64,6 +64,8 @@ Resources:
             Method: POST
             RestApiId:
               Ref: ApiGateway
+            Auth:
+              ApiKeyRequired: true
         UploadOptions:
           Type: Api
           Properties:
@@ -90,9 +92,11 @@ Resources:
           Type: Api
           Properties:
             Path: /list
-            Method: GET
+            Method: POST
             RestApiId:
               Ref: ApiGateway
+            Auth:
+              ApiKeyRequired: true
         ListOptions:
           Type: Api
           Properties:
@@ -122,6 +126,8 @@ Resources:
             Method: POST
             RestApiId:
               Ref: ApiGateway
+            Auth:
+              ApiKeyRequired: true
         DeleteOptions:
           Type: Api
           Properties:
@@ -142,9 +148,47 @@ Resources:
         Type: REGIONAL
       Cors:
         AllowOrigin: '''*'''
-        AllowHeaders: '''Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'''
+        AllowHeaders: '''Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,x-api-key'''
         AllowMethods: '''GET,POST,OPTIONS,DELETE'''
         MaxAge: '''3000'''
+      Auth:
+        ApiKeyRequired: true
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    DependsOn:
+    - ApiGatewayStage
+    Properties:
+      Name:
+        Fn::Sub: vrc-tryon-apikey-${Environment}
+      Description: PF Tryon API Key
+      Enabled: true
+  UsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn:
+    - ApiGatewayStage
+    Properties:
+      UsagePlanName:
+        Fn::Sub: vrc-tryon-usage-plan-${Environment}
+      Description: PF Tryon Usage Plan
+      ApiStages:
+      - ApiId:
+          Ref: ApiGateway
+        Stage:
+          Ref: Environment
+      Throttle:
+        BurstLimit: 200
+        RateLimit: 100
+      Quota:
+        Limit: 10000
+        Period: DAY
+  UsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId:
+        Ref: ApiKey
+      KeyType: API_KEY
+      UsagePlanId:
+        Ref: UsagePlan
 Outputs:
   ApiUrl:
     Description: "API Gateway \u7AEF\u70B9 URL"
@@ -178,3 +222,15 @@ Outputs:
       Fn::GetAtt:
       - PFTryonDeleteTool
       - Arn
+  ApiKeyId:
+    Description: API Key ID
+    Value:
+      Ref: ApiKey
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-ApiKeyId
+  ApiKeyValue:
+    Description: "API Key \u503C (\u8BF7\u59A5\u5584\u4FDD\u7BA1)"
+    Value:
+      Fn::Sub: "\u8BF7\u5728 AWS Console \u7684 API Gateway > API Keys \u4E2D\u67E5\
+        \u770B"

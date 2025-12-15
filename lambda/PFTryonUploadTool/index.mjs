@@ -1,10 +1,10 @@
 /**
  * AWS Lambda 函数 - PFTryonUploadTool
  * 处理服装图片上传到 S3（私有存储桶）
- * Node.js 20.x (ES Module)
+ * Node.js 18.x (ES Module)
  */
 
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const s3Client = new S3Client({ region: process.env.AWS_REGION || 'ap-northeast-1' });
@@ -95,14 +95,16 @@ export const handler = async (event) => {
 
         // 上传到 S3（私有）
         console.log(`[PFTryonUploadTool] [${i + 1}/${files.length}] 开始上传到 S3...`);
+        
+        // S3 元数据只能包含 ASCII 字符，需要对非 ASCII 字符进行 Base64 编码
         const uploadCommand = new PutObjectCommand({
           Bucket: BUCKET_NAME,
           Key: fileKey,
           Body: fileBuffer,
           ContentType: file.type,
           Metadata: {
-            brand: brandName,              // 保存原始品牌名（支持中日文）
-            originalname: file.name,       // 保存原始文件名（支持中日文）
+            brand: Buffer.from(brandName, 'utf8').toString('base64'),              // Base64 编码品牌名（支持中日文）
+            originalname: Buffer.from(file.name, 'utf8').toString('base64'),      // Base64 编码文件名（支持中日文）
             uploaddate: new Date().toISOString()
           }
         });
@@ -112,7 +114,7 @@ export const handler = async (event) => {
 
         // 生成预签名 URL（临时访问链接）
         console.log(`[PFTryonUploadTool] [${i + 1}/${files.length}] 生成预签名 URL...`);
-        const getCommand = new PutObjectCommand({
+        const getCommand = new GetObjectCommand({
           Bucket: BUCKET_NAME,
           Key: fileKey
         });

@@ -12,93 +12,99 @@ import {
   Image as ImageIcon,
   Folder,
   Calendar,
-  Tag
+  Tag,
+  Loader2,
+  AlertCircle,
+  RefreshCw,
+  Info
 } from 'lucide-react'
-
-interface ImageItem {
-  id: string
-  name: string
-  brand: string
-  url: string
-  size: number
-  uploadDate: Date
-  type: string
-}
-
-// 模拟数据
-const mockImages: ImageItem[] = [
-  {
-    id: '1',
-    name: '19k37ddq (1).jpg',
-    brand: 'Nike',
-    url: 'https://images.unsplash.com/photo-1542291026-7eec264c27ff',
-    size: 512 * 1024,
-    uploadDate: new Date('2025-02-10'),
-    type: 'image/jpeg'
-  },
-  {
-    id: '2',
-    name: 'pants_woman.jpg',
-    brand: 'Adidas',
-    url: 'https://images.unsplash.com/photo-1624378439575-d8705ad7ae80',
-    size: 153 * 1024,
-    uploadDate: new Date('2025-02-09'),
-    type: 'image/jpeg'
-  },
-  {
-    id: '3',
-    name: 'DF-F-C0051-1.jpg',
-    brand: 'Uniqlo',
-    url: 'https://images.unsplash.com/photo-1618354691373-d851c5c3a990',
-    size: 60 * 1024,
-    uploadDate: new Date('2025-02-08'),
-    type: 'image/jpeg'
-  },
-  {
-    id: '4',
-    name: 'summer-dress-01.jpg',
-    brand: 'Zara',
-    url: 'https://images.unsplash.com/photo-1572804013309-59a88b7e92f1',
-    size: 423 * 1024,
-    uploadDate: new Date('2025-02-07'),
-    type: 'image/jpeg'
-  },
-  {
-    id: '5',
-    name: 'jacket-leather.jpg',
-    brand: 'H&M',
-    url: 'https://images.unsplash.com/photo-1551028719-00167b16eac5',
-    size: 678 * 1024,
-    uploadDate: new Date('2025-02-06'),
-    type: 'image/jpeg'
-  },
-  {
-    id: '6',
-    name: 'sneakers-white.jpg',
-    brand: 'Nike',
-    url: 'https://images.unsplash.com/photo-1549298916-b41d501d3772',
-    size: 289 * 1024,
-    uploadDate: new Date('2025-02-05'),
-    type: 'image/jpeg'
-  }
-]
+import { listImages, deleteImages, type ImageItem } from '@/lib/api'
+import { useLanguage } from '@/lib/i18n/LanguageContext'
+import LanguageSwitcher from '@/components/LanguageSwitcher'
 
 export default function GalleryPage() {
-  const [images, setImages] = useState<ImageItem[]>(mockImages)
+  const { t } = useLanguage()
+  const [images, setImages] = useState<ImageItem[]>([])
   const [searchTerm, setSearchTerm] = useState('')
-  const [selectedBrand, setSelectedBrand] = useState('全部')
+  const [selectedBrand, setSelectedBrand] = useState(t.gallery.allBrands)
   const [hoveredImage, setHoveredImage] = useState<string | null>(null)
   const [previewPosition, setPreviewPosition] = useState({ x: 0, y: 0 })
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [isDeleting, setIsDeleting] = useState<string | null>(null)
   const previewRef = useRef<HTMLDivElement>(null)
 
+  // 加载图片列表
+  useEffect(() => {
+    loadImages()
+  }, [selectedBrand])
+
+  const loadImages = async () => {
+    try {
+      setIsLoading(true)
+      setError(null)
+      
+      const brand = selectedBrand === t.gallery.allBrands ? undefined : selectedBrand
+      const response = await listImages(brand)
+      
+      setImages(response.images)
+    } catch (err) {
+      console.error('Failed to load images:', err)
+      setError(err instanceof Error ? err.message : t.gallery.loadFailed)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // 删除图片
+  const handleDelete = async (image: ImageItem) => {
+    if (!confirm(t.gallery.deleteConfirm)) {
+      return
+    }
+
+    try {
+      setIsDeleting(image.id)
+      await deleteImages([image.key])
+      
+      // 从列表中移除
+      setImages(prev => prev.filter(img => img.id !== image.id))
+      
+      alert(t.gallery.deleteSuccess)
+    } catch (err) {
+      console.error('Failed to delete image:', err)
+      alert(`${t.gallery.deleteFailed}：${err instanceof Error ? err.message : t.common.error}`)
+    } finally {
+      setIsDeleting(null)
+    }
+  }
+
+  // 下载图片
+  const handleDownload = async (image: ImageItem) => {
+    try {
+      const response = await fetch(image.url)
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = image.name
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+    } catch (err) {
+      console.error('Failed to download image:', err)
+      alert(t.gallery.downloadFailed)
+    }
+  }
+
   // 获取所有品牌
-  const brands = ['全部', ...Array.from(new Set(images.map(img => img.brand)))]
+  const brands = [t.gallery.allBrands, ...Array.from(new Set(images.map(img => img.brand)))]
 
   // 过滤图片
   const filteredImages = images.filter(img => {
     const matchesSearch = img.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          img.brand.toLowerCase().includes(searchTerm.toLowerCase())
-    const matchesBrand = selectedBrand === '全部' || img.brand === selectedBrand
+    const matchesBrand = selectedBrand === t.gallery.allBrands || img.brand === selectedBrand
     return matchesSearch && matchesBrand
   })
 
@@ -140,12 +146,17 @@ export default function GalleryPage() {
   }
 
   // 格式化日期
-  const formatDate = (date: Date) => {
-    return date.toLocaleDateString('zh-CN', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    })
+  const formatDate = (dateString: string) => {
+    try {
+      const date = new Date(dateString)
+      return date.toLocaleDateString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      })
+    } catch {
+      return dateString
+    }
   }
 
   return (
@@ -157,22 +168,23 @@ export default function GalleryPage() {
             <div className="flex items-center space-x-3">
               <Package className="w-8 h-8 text-primary-600" />
               <h1 className="text-2xl font-bold text-slate-900">
-                服装图片管理系统
+                {t.common.appName}
               </h1>
             </div>
             <div className="flex items-center space-x-4">
+              <LanguageSwitcher />
               <Link
                 href="/upload"
                 className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors font-medium"
               >
-                上传图片
+                {t.common.upload}
               </Link>
               <Link 
                 href="/"
                 className="flex items-center space-x-2 text-slate-600 hover:text-slate-900 transition-colors"
               >
                 <ArrowLeft className="w-5 h-5" />
-                <span>返回首页</span>
+                <span>{t.common.back}</span>
               </Link>
             </div>
           </div>
@@ -184,12 +196,31 @@ export default function GalleryPage() {
         <div className="max-w-7xl mx-auto">
           {/* 标题和统计 */}
           <div className="mb-6 animate-fade-in">
-            <h2 className="text-3xl font-bold text-slate-900 mb-2">
-              图片一览
-            </h2>
-            <p className="text-slate-600">
-              共 <span className="font-semibold text-primary-600">{filteredImages.length}</span> 张图片
-            </p>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-3xl font-bold text-slate-900">
+                {t.gallery.title}
+              </h2>
+              <button
+                onClick={loadImages}
+                disabled={isLoading}
+                className="flex items-center space-x-2 px-4 py-2 bg-white border-2 border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 hover:border-primary-300 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                title={isLoading ? t.gallery.refreshing : t.gallery.refresh}
+              >
+                <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+                <span>{isLoading ? t.gallery.refreshing : t.gallery.refresh}</span>
+              </button>
+            </div>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <p className="text-slate-600">
+                共 <span className="font-semibold text-primary-600">{filteredImages.length}</span> {t.gallery.totalCount}
+              </p>
+              {images.length > 0 && images[0]?.urlExpiresIn && (
+                <div className="flex items-center space-x-2 text-sm text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg">
+                  <Info className="w-4 h-4" />
+                  <span>{t.gallery.urlExpiresIn}{Math.floor(images[0].urlExpiresIn / 60)} {t.gallery.minutes}</span>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* 搜索和筛选栏 */}
@@ -202,8 +233,9 @@ export default function GalleryPage() {
                   type="text"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="搜索图片名称或品牌..."
+                  placeholder={t.gallery.searchPlaceholder}
                   className="w-full pl-10 pr-4 py-2.5 border-2 border-slate-200 rounded-lg focus:border-primary-500 focus:ring-2 focus:ring-primary-200 outline-none transition-all text-slate-900"
+                  disabled={isLoading}
                 />
               </div>
 
@@ -214,6 +246,7 @@ export default function GalleryPage() {
                   value={selectedBrand}
                   onChange={(e) => setSelectedBrand(e.target.value)}
                   className="px-4 py-2.5 border-2 border-slate-200 rounded-lg focus:border-primary-500 focus:ring-2 focus:ring-primary-200 outline-none transition-all text-slate-900 bg-white"
+                  disabled={isLoading}
                 >
                   {brands.map(brand => (
                     <option key={brand} value={brand}>{brand}</option>
@@ -223,8 +256,33 @@ export default function GalleryPage() {
             </div>
           </div>
 
+          {/* 加载状态 */}
+          {isLoading && (
+            <div className="flex flex-col items-center justify-center py-16 animate-fade-in">
+              <Loader2 className="w-12 h-12 text-primary-500 animate-spin mb-4" />
+              <p className="text-slate-600">{t.common.loading}</p>
+            </div>
+          )}
+
+          {/* 错误状态 */}
+          {error && !isLoading && (
+            <div className="bg-red-50 border-2 border-red-200 rounded-xl p-6 animate-fade-in">
+              <div className="flex items-center space-x-3 mb-2">
+                <AlertCircle className="w-6 h-6 text-red-500" />
+                <h3 className="text-lg font-semibold text-red-900">{t.gallery.loadFailed}</h3>
+              </div>
+              <p className="text-red-700 mb-4">{error}</p>
+              <button
+                onClick={loadImages}
+                className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+              >
+                {t.common.retry}
+              </button>
+            </div>
+          )}
+
           {/* 图片网格 */}
-          {filteredImages.length > 0 ? (
+          {!isLoading && !error && filteredImages.length > 0 && (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 animate-scale-in">
               {filteredImages.map((image) => (
                 <div
@@ -241,13 +299,32 @@ export default function GalleryPage() {
                       className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
                     />
                     <div className="image-hover-overlay">
-                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 bg-black/40">
                         <div className="flex space-x-2">
-                          <button className="p-2 bg-white rounded-lg shadow-lg hover:bg-slate-50 transition-colors">
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleDownload(image)
+                            }}
+                            className="p-2 bg-white rounded-lg shadow-lg hover:bg-slate-50 transition-colors"
+                            title={t.common.download}
+                          >
                             <Download className="w-5 h-5 text-slate-700" />
                           </button>
-                          <button className="p-2 bg-white rounded-lg shadow-lg hover:bg-red-50 transition-colors">
-                            <Trash2 className="w-5 h-5 text-red-500" />
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleDelete(image)
+                            }}
+                            disabled={isDeleting === image.id}
+                            className="p-2 bg-white rounded-lg shadow-lg hover:bg-red-50 transition-colors disabled:opacity-50"
+                            title={t.common.delete}
+                          >
+                            {isDeleting === image.id ? (
+                              <Loader2 className="w-5 h-5 text-red-500 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-5 h-5 text-red-500" />
+                            )}
                           </button>
                         </div>
                       </div>
@@ -277,23 +354,28 @@ export default function GalleryPage() {
                 </div>
               ))}
             </div>
-          ) : (
+          )}
+
+          {/* 空状态 */}
+          {!isLoading && !error && filteredImages.length === 0 && (
             <div className="text-center py-16 animate-fade-in">
               <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
                 <ImageIcon className="w-10 h-10 text-slate-400" />
               </div>
               <h3 className="text-xl font-semibold text-slate-900 mb-2">
-                没有找到图片
+                {images.length === 0 ? t.gallery.noImagesYet : t.gallery.noImages}
               </h3>
               <p className="text-slate-600 mb-6">
-                尝试调整搜索条件或上传新的图片
+                {images.length === 0 
+                  ? t.gallery.noImagesYetDesc 
+                  : t.gallery.noImagesDesc}
               </p>
               <Link
                 href="/upload"
                 className="inline-flex items-center space-x-2 px-6 py-3 bg-primary-500 text-white rounded-xl hover:bg-primary-600 transition-colors font-medium shadow-lg"
               >
                 <ImageIcon className="w-5 h-5" />
-                <span>上传图片</span>
+                <span>{t.common.upload}</span>
               </Link>
             </div>
           )}

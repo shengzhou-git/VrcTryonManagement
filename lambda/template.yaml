@@ -71,6 +71,8 @@ Resources:
             Path: /upload
             Method: POST
             RestApiId: !Ref ApiGateway
+            Auth:
+              ApiKeyRequired: true
         UploadOptions:
           Type: Api
           Properties:
@@ -94,8 +96,10 @@ Resources:
           Type: Api
           Properties:
             Path: /list
-            Method: GET
+            Method: POST
             RestApiId: !Ref ApiGateway
+            Auth:
+              ApiKeyRequired: true
         ListOptions:
           Type: Api
           Properties:
@@ -121,6 +125,8 @@ Resources:
             Path: /delete
             Method: POST
             RestApiId: !Ref ApiGateway
+            Auth:
+              ApiKeyRequired: true
         DeleteOptions:
           Type: Api
           Properties:
@@ -138,9 +144,47 @@ Resources:
         Type: REGIONAL
       Cors:
         AllowOrigin: "'*'"
-        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,x-api-key'"
         AllowMethods: "'GET,POST,OPTIONS,DELETE'"
         MaxAge: "'3000'"
+      Auth:
+        ApiKeyRequired: true
+
+  # API Key
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    DependsOn:
+      - ApiGatewayStage
+    Properties:
+      Name: !Sub 'vrc-tryon-apikey-${Environment}'
+      Description: PF Tryon API Key
+      Enabled: true
+
+  # Usage Plan
+  UsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn:
+      - ApiGatewayStage
+    Properties:
+      UsagePlanName: !Sub 'vrc-tryon-usage-plan-${Environment}'
+      Description: PF Tryon Usage Plan
+      ApiStages:
+        - ApiId: !Ref ApiGateway
+          Stage: !Ref Environment
+      Throttle:
+        BurstLimit: 200
+        RateLimit: 100
+      Quota:
+        Limit: 10000
+        Period: DAY
+
+  # Usage Plan Key - 将 API Key 关联到 Usage Plan
+  UsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref UsagePlan
 
 # 输出
 Outputs:
@@ -167,4 +211,14 @@ Outputs:
   PFTryonDeleteToolArn:
     Description: 删除函数 ARN
     Value: !GetAtt PFTryonDeleteTool.Arn
+
+  ApiKeyId:
+    Description: API Key ID
+    Value: !Ref ApiKey
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiKeyId'
+
+  ApiKeyValue:
+    Description: API Key 值 (请妥善保管)
+    Value: !Sub '请在 AWS Console 的 API Gateway > API Keys 中查看'
 
