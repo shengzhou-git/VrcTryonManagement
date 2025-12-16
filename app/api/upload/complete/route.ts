@@ -11,6 +11,10 @@ const AWS_API_KEY = process.env.TRYON_AWS_API_KEY || ''
 export async function POST(request: NextRequest) {
   try {
     if (!AWS_API_URL || !AWS_API_KEY) {
+      console.error('[Upload Complete] Missing env vars:', {
+        hasUrl: !!process.env.TRYON_AWS_API_URL,
+        hasKey: !!process.env.TRYON_AWS_API_KEY,
+      })
       return NextResponse.json({ error: '服务器未配置 TRYON_AWS_API_URL / TRYON_AWS_API_KEY' }, { status: 500 })
     }
 
