@@ -7,6 +7,51 @@ import { getIdTokenOrThrow } from '@/lib/cognito-auth'
 
 const API_BASE_URL = '/api'; // 使用本地 Next.js API 路由
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isRetryableFetchError(err: unknown): boolean {
+  // 浏览器 fetch 网络错误通常是 TypeError，message 可能是 "Failed to fetch"
+  const msg = err instanceof Error ? err.message : String(err || '')
+  return (
+    msg.includes('Failed to fetch') ||
+    msg.includes('NetworkError') ||
+    msg.includes('ERR_CONNECTION_CLOSED') ||
+    msg.includes('Load failed') ||
+    msg.includes('fetch failed')
+  )
+}
+
+async function fetchWithRetry(input: RequestInfo | URL, init: RequestInit, opts?: { retries?: number; baseDelayMs?: number }) {
+  const retries = Math.max(0, Math.floor(opts?.retries ?? 2)) // 2 => 最多 3 次
+  const baseDelayMs = Math.max(50, Math.floor(opts?.baseDelayMs ?? 400))
+
+  let lastErr: unknown = null
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const resp = await fetch(input, init)
+      // 仅对 429 / 5xx 做重试（非幂等接口也谨慎；complete 对同 key 是可重复执行的）
+      if (resp.status === 429 || (resp.status >= 500 && resp.status <= 599)) {
+        if (attempt < retries) {
+          const delay = baseDelayMs * Math.pow(2, attempt) + Math.floor(Math.random() * 120)
+          await sleep(delay)
+          continue
+        }
+      }
+      return resp
+    } catch (e) {
+      lastErr = e
+      const retryable = isRetryableFetchError(e)
+      if (!retryable || attempt >= retries) throw e
+      const delay = baseDelayMs * Math.pow(2, attempt) + Math.floor(Math.random() * 120)
+      await sleep(delay)
+    }
+  }
+  // 理论上不会走到这里
+  throw lastErr || new Error('FETCH_RETRY_FAILED')
+}
+
 export interface UploadFileData {
   name: string
   type: string
@@ -148,7 +193,8 @@ export async function uploadImages(
     const fileByName = new Map(files.map((f) => [f.name, f]))
     const results: UploadResponse['results'] = []
     const onFileProgress = options.onFileProgress
-    const concurrency = options.concurrency ?? 3
+    // Amplify/Next API 在大量请求时更容易出现连接被关闭，默认并发稍微保守一些
+    const concurrency = options.concurrency ?? 2
 
     // 2) 直传到 S3 + 立即调用 complete（每个文件独立处理）
     await runPool(
@@ -187,7 +233,7 @@ export async function uploadImages(
         onFileProgress?.({ fileName, fileKey, phase: 'complete', status: 'uploading', progress: 99 })
 
         try {
-          const completeResp = await fetch(`${API_BASE_URL}/upload/complete`, {
+          const completeResp = await fetchWithRetry(`${API_BASE_URL}/upload/complete`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -198,7 +244,7 @@ export async function uploadImages(
               brandId, // 传递 brandId 给 complete
               items: [{ key: item.key, fileName, mimeType: localFile.type || undefined }]
             }),
-          })
+          }, { retries: 2, baseDelayMs: 500 })
 
           const completeData = (await completeResp.json().catch(() => null)) as any
 
