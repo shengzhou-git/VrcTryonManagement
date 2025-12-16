@@ -260,8 +260,10 @@ export const handler = async (event) => {
           )
 
           // 统一输出 JPG：透明背景铺白（PNG）
+          // 使用与 processed 相同的 Jimp 类来创建背景，确保类型兼容
           // Jimp v1 requires object argument: { width, height, color }
-          const bg = new Jimp({ width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, color: 0xffffffff })
+          const JimpClass = processed.constructor || Jimp
+          const bg = new JimpClass({ width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, color: 0xffffffff })
           bg.composite(processed, 0, 0)
           if (typeof bg.quality === 'function') bg.quality(90)
 
