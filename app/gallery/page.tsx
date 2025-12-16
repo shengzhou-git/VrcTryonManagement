@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { 
   ArrowLeft, 
@@ -10,29 +10,58 @@ import {
   Download,
   Trash2,
   Image as ImageIcon,
-  Folder,
   Calendar,
   Tag,
   Loader2,
   AlertCircle,
   RefreshCw,
-  Info
 } from 'lucide-react'
-import { listImages, deleteImages, type ImageItem } from '@/lib/api'
+import { listImages, deleteImages, deleteBrandImages, type ImageItem } from '@/lib/api'
 import { useLanguage } from '@/lib/i18n/LanguageContext'
 import LanguageSwitcher from '@/components/LanguageSwitcher'
+import { authCheck, hasGroup, type CognitoUserInfo } from '@/lib/cognito-auth'
+import { useRouter } from 'next/navigation'
 
 export default function GalleryPage() {
+  const router = useRouter()
   const { t } = useLanguage()
   const [images, setImages] = useState<ImageItem[]>([])
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedBrand, setSelectedBrand] = useState(t.gallery.allBrands)
-  const [hoveredImage, setHoveredImage] = useState<string | null>(null)
-  const [previewPosition, setPreviewPosition] = useState({ x: 0, y: 0 })
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState<string | null>(null)
-  const previewRef = useRef<HTMLDivElement>(null)
+  const [isBrandDeleting, setIsBrandDeleting] = useState(false)
+  const [userinfo, setUserinfo] = useState<CognitoUserInfo | null>(null)
+
+  const isAdmin = hasGroup(userinfo, 'Admin')
+
+  // 登录检查 + 权限检查（Admin / ViewData）
+  useEffect(() => {
+    ;(async () => {
+      const { token, userinfo } = await authCheck()
+      if (!token) {
+        router.push('/login')
+        return
+      }
+      // 只允许 Admin 或 ViewData
+      const ok = hasGroup(userinfo, 'Admin') || hasGroup(userinfo, 'ViewData')
+      if (!ok) {
+        router.push('/login')
+        return
+      }
+      setUserinfo(userinfo)
+    })()
+  }, [router])
+
+  // 语言切换时，保证“全部”选项的值一致
+  useEffect(() => {
+    const allLabels = ['全部', 'All Brands', 'すべて']
+    if (allLabels.includes(selectedBrand)) {
+      setSelectedBrand(t.gallery.allBrands)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [t.gallery.allBrands])
 
   // 加载图片列表
   useEffect(() => {
@@ -58,6 +87,10 @@ export default function GalleryPage() {
 
   // 删除图片
   const handleDelete = async (image: ImageItem) => {
+    if (!isAdmin) {
+      alert('权限不足（需要 Admin）')
+      return
+    }
     if (!confirm(t.gallery.deleteConfirm)) {
       return
     }
@@ -108,34 +141,50 @@ export default function GalleryPage() {
     return matchesSearch && matchesBrand
   })
 
-  // 处理鼠标移动以更新预览位置
-  const handleMouseMove = (e: React.MouseEvent, imageId: string) => {
-    setHoveredImage(imageId)
-    
-    // 计算预览框位置（跟随鼠标，但确保不超出屏幕）
-    const offsetX = 20
-    const offsetY = 20
-    const previewWidth = 400
-    const previewHeight = 400
-    
-    let x = e.clientX + offsetX
-    let y = e.clientY + offsetY
-    
-    // 检查右边界
-    if (x + previewWidth > window.innerWidth) {
-      x = e.clientX - previewWidth - offsetX
-    }
-    
-    // 检查下边界
-    if (y + previewHeight > window.innerHeight) {
-      y = e.clientY - previewHeight - offsetY
-    }
-    
-    setPreviewPosition({ x, y })
+  const canBulkDeleteBrand =
+    isAdmin &&
+    !isLoading &&
+    !isBrandDeleting &&
+    selectedBrand !== t.gallery.allBrands &&
+    images.length > 0
+
+  const chunk = <T,>(arr: T[], size: number): T[][] => {
+    const out: T[][] = []
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+    return out
   }
 
-  const handleMouseLeave = () => {
-    setHoveredImage(null)
+  const handleDeleteBrand = async () => {
+    if (!isAdmin) {
+      alert('权限不足（需要 Admin）')
+      return
+    }
+    if (selectedBrand === t.gallery.allBrands) {
+      alert('请先选择要删除的品牌')
+      return
+    }
+    if (images.length === 0) {
+      alert('该品牌暂无图片')
+      return
+    }
+    const ok = confirm(`${t.gallery.deleteBrandConfirm}\n品牌：${selectedBrand}\n数量：${images.length}`)
+    if (!ok) return
+
+    try {
+      setIsBrandDeleting(true)
+      await deleteBrandImages(selectedBrand)
+      // 删除完成后，当前 selectedBrand 可能已不存在于下拉 options 中（因为 brands 是从 images 推导的），
+      // 会导致 UI 看起来回到“全部”但 state 仍是旧品牌，从而不会触发重新加载。
+      // 这里显式切回“全部”，触发 useEffect 重新拉取全量列表并恢复下拉可选项。
+      setImages([])
+      setSelectedBrand(t.gallery.allBrands)
+      alert(t.gallery.deleteBrandSuccess)
+    } catch (err) {
+      console.error('Failed to delete brand images:', err)
+      alert(`${t.gallery.deleteBrandFailed}：${err instanceof Error ? err.message : t.common.error}`)
+    } finally {
+      setIsBrandDeleting(false)
+    }
   }
 
   // 格式化文件大小
@@ -173,18 +222,26 @@ export default function GalleryPage() {
             </div>
             <div className="flex items-center space-x-4">
               <LanguageSwitcher />
-              <Link
-                href="/upload"
-                className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors font-medium"
-              >
-                {t.common.upload}
-              </Link>
+              {isAdmin && (
+                <Link
+                  href="/upload"
+                  className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors font-medium"
+                >
+                  {t.common.upload}
+                </Link>
+              )}
               <Link 
                 href="/"
                 className="flex items-center space-x-2 text-slate-600 hover:text-slate-900 transition-colors"
               >
                 <ArrowLeft className="w-5 h-5" />
                 <span>{t.common.back}</span>
+              </Link>
+              <Link
+                href="/account"
+                className="px-3 py-2 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-700 text-sm"
+              >
+                Account
               </Link>
             </div>
           </div>
@@ -214,12 +271,6 @@ export default function GalleryPage() {
               <p className="text-slate-600">
                 共 <span className="font-semibold text-primary-600">{filteredImages.length}</span> {t.gallery.totalCount}
               </p>
-              {images.length > 0 && images[0]?.urlExpiresIn && (
-                <div className="flex items-center space-x-2 text-sm text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg">
-                  <Info className="w-4 h-4" />
-                  <span>{t.gallery.urlExpiresIn}{Math.floor(images[0].urlExpiresIn / 60)} {t.gallery.minutes}</span>
-                </div>
-              )}
             </div>
           </div>
 
@@ -253,6 +304,28 @@ export default function GalleryPage() {
                   ))}
                 </select>
               </div>
+
+              {/* 品牌一键删除（仅 Admin + 选择了具体品牌） */}
+              {isAdmin && selectedBrand !== t.gallery.allBrands && (
+                <button
+                  onClick={handleDeleteBrand}
+                  disabled={!canBulkDeleteBrand}
+                  className="inline-flex items-center justify-center px-4 py-2.5 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={t.gallery.deleteBrandAll}
+                >
+                  {isBrandDeleting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      <span>{t.gallery.deleteBrandDeleting}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4 mr-2" />
+                      <span>{t.gallery.deleteBrandAll}</span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           </div>
 
@@ -286,10 +359,8 @@ export default function GalleryPage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 animate-scale-in">
               {filteredImages.map((image) => (
                 <div
-                  key={image.id}
+                  key={image.key}
                   className="image-card bg-white rounded-xl shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden group cursor-pointer border-2 border-transparent hover:border-primary-200"
-                  onMouseMove={(e) => handleMouseMove(e, image.id)}
-                  onMouseLeave={handleMouseLeave}
                 >
                   {/* 缩略图 */}
                   <div className="relative aspect-square bg-slate-100 overflow-hidden">
@@ -381,34 +452,6 @@ export default function GalleryPage() {
           )}
         </div>
       </main>
-
-      {/* 悬停预览 */}
-      {hoveredImage && (
-        <div
-          ref={previewRef}
-          className="fixed z-50 pointer-events-none animate-fade-in"
-          style={{
-            left: `${previewPosition.x}px`,
-            top: `${previewPosition.y}px`,
-          }}
-        >
-          <div className="bg-white rounded-2xl shadow-2xl overflow-hidden border-4 border-white">
-            <img
-              src={filteredImages.find(img => img.id === hoveredImage)?.url}
-              alt="Preview"
-              className="w-96 h-96 object-cover"
-            />
-            <div className="p-4 bg-gradient-to-t from-black/80 to-transparent absolute bottom-0 left-0 right-0">
-              <p className="text-white font-semibold text-sm truncate">
-                {filteredImages.find(img => img.id === hoveredImage)?.name}
-              </p>
-              <p className="text-white/90 text-xs">
-                {filteredImages.find(img => img.id === hoveredImage)?.brand}
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

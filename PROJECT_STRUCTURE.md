@@ -75,7 +75,6 @@ vrc-tryon-management/
 - **功能**：浏览和管理已上传的图片
 - **特点**：
   - 网格布局展示
-  - **鼠标悬停预览**（核心功能）
   - 搜索功能
   - 品牌筛选
   - 下载和删除操作
@@ -88,15 +87,15 @@ vrc-tryon-management/
   - `uploadImages()` - 上传图片
   - `listImages()` - 获取列表
   - `deleteImages()` - 删除图片
-  - `fileToBase64()` - 文件转换
+  - （上传已切换为“后端签名 + 前端直传 S3”，不再使用 Base64 转换）
 
 ### 5. Lambda 函数（`lambda/`）
 
 #### upload-handler.js
-- 接收 Base64 编码的图片
-- 验证文件类型和大小
-- 上传到 S3
-- 返回结果和 URL
+- **推荐链路**：`/upload/prepare` 返回 presigned PUT URL → 前端直传 S3 → `/upload/complete` 登记 + 返回预签名 GET URL
+- 验证文件类型和大小（在 prepare 阶段）
+- S3 Key 按 `userId/brand/...` 隔离
+- 上传完成后写入 DynamoDB 记录用户-品牌关联与计数
 
 #### list-handler.js
 - 列出 S3 对象
@@ -154,35 +153,13 @@ vrc-tryon-management/
    - 图标 + 文字
 
 4. **图片预览**
-   - 固定位置跟随鼠标
-   - 大尺寸预览（400x400）
-   - 半透明背景信息
-   - 边框和阴影
+   - （已移除跟随鼠标的悬浮预览，保留卡片悬浮操作按钮）
 
 ## 🔧 技术实现细节
 
 ### 悬停预览功能
 
-```typescript
-// 核心实现逻辑
-const handleMouseMove = (e: React.MouseEvent, imageId: string) => {
-  setHoveredImage(imageId)
-  
-  // 计算位置，防止超出屏幕
-  let x = e.clientX + 20
-  let y = e.clientY + 20
-  
-  if (x + 400 > window.innerWidth) {
-    x = e.clientX - 400 - 20
-  }
-  
-  if (y + 400 > window.innerHeight) {
-    y = e.clientY - 400 - 20
-  }
-  
-  setPreviewPosition({ x, y })
-}
-```
+（已移除。）
 
 ### 拖放上传
 
@@ -195,21 +172,12 @@ const handleDrop = (e: DragEvent) => {
 }
 ```
 
-### Base64 转换
+### 上传（签名 + 直传）
 
-```typescript
-// 文件转 Base64
-const fileToBase64 = (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const base64 = reader.result.split(',')[1]
-      resolve(base64)
-    }
-    reader.readAsDataURL(file)
-  })
-}
-```
+上传流程由 `lib/api.ts` 负责编排：
+- 调用 `/api/upload/prepare` 获取 `uploadUrl/key/headers`
+- 前端 `PUT` 二进制到 S3
+- 调用 `/api/upload/complete` 进行登记并拿回可展示的预签名 URL
 
 ## 📱 响应式设计
 

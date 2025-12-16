@@ -1,0 +1,14 @@
+{
+  "name": "pftryon-upload-tool",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@jsquash/webp": "^1.5.0",
+    "jimp": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
+

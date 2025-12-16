@@ -1,5 +1,5 @@
 /**
- * Next.js API 路由 - 获取图片列表
+ * Next.js API 路由 - 上传完成登记（校验对象存在 + 记录 DynamoDB + 返回预签名 GET URL）
  * 服务器端代理，保护 API Key
  */
 
@@ -21,8 +21,7 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json()
 
-    // 调用 AWS API Gateway
-    const response = await fetch(`${AWS_API_URL}/list`, {
+    const response = await fetch(`${AWS_API_URL}/upload/complete`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -33,21 +32,15 @@ export async function POST(request: NextRequest) {
     })
 
     const data = await response.json()
-
     if (!response.ok) {
-      return NextResponse.json(
-        { error: data.error || '获取列表失败' },
-        { status: response.status }
-      )
+      return NextResponse.json({ error: data.error || '上传完成登记失败' }, { status: response.status })
     }
 
     return NextResponse.json(data)
   } catch (error) {
-    console.error('List API error:', error)
-    return NextResponse.json(
-      { error: '服务器错误' },
-      { status: 500 }
-    )
+    console.error('Upload complete API error:', error)
+    return NextResponse.json({ error: '服务器错误' }, { status: 500 })
   }
 }
+
 

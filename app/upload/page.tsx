@@ -12,6 +12,10 @@ import {
   ArrowLeft,
   Package
 } from 'lucide-react'
+import { authCheck, hasGroup } from '@/lib/cognito-auth'
+import { useEffect } from 'react'
+import { useLanguage } from '@/lib/i18n/LanguageContext'
+import LanguageSwitcher from '@/components/LanguageSwitcher'
 
 interface UploadFile {
   file: File
@@ -23,19 +27,45 @@ interface UploadFile {
 
 export default function UploadPage() {
   const router = useRouter()
+  const { t } = useLanguage()
   const [brandName, setBrandName] = useState('')
   const [files, setFiles] = useState<UploadFile[]>([])
   const [isDragging, setIsDragging] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
+  const [isAuthReady, setIsAuthReady] = useState(false)
+
+  useEffect(() => {
+    ;(async () => {
+      const { token, userinfo } = await authCheck()
+      if (!token) {
+        router.push('/login')
+        return
+      }
+      // 只有 Admin 可以上传
+      if (!hasGroup(userinfo, 'Admin')) {
+        router.push('/gallery')
+        return
+      }
+      setIsAuthReady(true)
+    })()
+  }, [router])
 
   // 处理文件选择（支持单文件和文件夹）
   const handleFileSelect = useCallback((selectedFiles: FileList | null) => {
     if (!selectedFiles) return
 
-    const imageFiles = Array.from(selectedFiles).filter(file => file.type.startsWith('image/'))
+    const allowTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
+    const allowExt = new Set(['.jpg', '.jpeg', '.png', '.webp'])
+    const imageFiles = Array.from(selectedFiles).filter((file) => {
+      if (allowTypes.has(file.type)) return true
+      const name = (file.name || '').toLowerCase()
+      const dot = name.lastIndexOf('.')
+      const ext = dot >= 0 ? name.slice(dot) : ''
+      return allowExt.has(ext)
+    })
     
     if (imageFiles.length === 0) {
-      alert('未找到图片文件，请选择包含图片的文件夹')
+      alert('未找到可上传的图片文件（仅支持 JPG/PNG/WebP，不支持 GIF）')
       return
     }
 
@@ -119,24 +149,36 @@ export default function UploadPage() {
       // 准备文件列表
       const fileList = files.map(f => f.file)
       
-      // 开始上传（显示进度）
-      const uploadPromise = uploadImages(brandName, fileList)
-      
-      // 模拟进度更新（实际上传是在后台进行）
-      const progressInterval = setInterval(() => {
-        setFiles(prev => prev.map(f => {
-          if (f.status === 'uploading' && f.progress < 90) {
-            return { ...f, progress: Math.min(f.progress + 10, 90) }
-          }
-          return f
-        }))
-      }, 300)
+      // 开始上传：按文件实时回调进度/状态（不再使用“假进度条”）
+      const response = await uploadImages(brandName, fileList, {
+        concurrency: 3,
+        onFileProgress: (e) => {
+          setFiles((prev) => {
+            const byKeyIdx = e.fileKey
+              ? prev.findIndex((x) => `${x.file.name}|${x.file.size}|${x.file.lastModified}` === e.fileKey)
+              : -1
+            const idx = byKeyIdx >= 0 ? byKeyIdx : prev.findIndex((x) => x.file.name === e.fileName)
+            if (idx < 0) return prev
+            const next = [...prev]
+            const cur = next[idx]
 
-      // 等待上传完成
-      const response = await uploadPromise
-      
-      // 清除进度更新
-      clearInterval(progressInterval)
+            if (e.status === 'error') {
+              next[idx] = { ...cur, status: 'error', progress: 0 }
+              return next
+            }
+
+            if (e.phase === 'complete' && e.status === 'success') {
+              next[idx] = { ...cur, status: 'success', progress: 100 }
+              return next
+            }
+
+            // uploading：用真实进度刷新（0-99）
+            const p = Math.max(0, Math.min(99, e.progress))
+            next[idx] = { ...cur, status: 'uploading', progress: p }
+            return next
+          })
+        },
+      })
 
       // 根据结果更新状态
       if (response.results) {
@@ -193,16 +235,19 @@ export default function UploadPage() {
             <div className="flex items-center space-x-3">
               <Package className="w-8 h-8 text-primary-600" />
               <h1 className="text-2xl font-bold text-slate-900">
-                服装图片管理系统
+                {t.common.appName}
               </h1>
             </div>
-            <Link 
-              href="/"
-              className="flex items-center space-x-2 text-slate-600 hover:text-slate-900 transition-colors"
-            >
-              <ArrowLeft className="w-5 h-5" />
-              <span>返回首页</span>
-            </Link>
+            <div className="flex items-center space-x-4">
+              <LanguageSwitcher />
+              <Link
+                href="/"
+                className="flex items-center space-x-2 text-slate-600 hover:text-slate-900 transition-colors"
+              >
+                <ArrowLeft className="w-5 h-5" />
+                <span>{t.common.back}</span>
+              </Link>
+            </div>
           </div>
         </div>
       </nav>
@@ -275,7 +320,7 @@ export default function UploadPage() {
                       <input
                         type="file"
                         multiple
-                        accept="image/*"
+                        accept="image/jpeg,image/png,image/webp"
                         onChange={(e) => handleFileSelect(e.target.files)}
                         className="hidden"
                         disabled={isUploading}
@@ -294,6 +339,7 @@ export default function UploadPage() {
                         webkitdirectory=""
                         directory=""
                         multiple
+                        accept="image/jpeg,image/png,image/webp"
                         onChange={(e) => handleFileSelect(e.target.files)}
                         className="hidden"
                         disabled={isUploading}

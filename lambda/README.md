@@ -27,14 +27,25 @@ lambda/
 **功能：** 处理服装图片上传到 S3
 
 **特点：**
-- 接收 Base64 编码的图片数据
+- 上传流程为“后端签名 + 前端直传 S3 + 上传完成登记”
+- `POST /upload/prepare`：返回 presigned PUT URL
+- 前端 PUT 直传到 S3（按 `userId/brand/...` 隔离）
+- `POST /upload/complete`：后端登记 + 生成预签名 GET URL
+- **上传完成后统一处理图片**：裁剪/缩放为 **768×1024**（等比缩放 + 居中裁剪，不拉伸变形），并统一转为 **JPG**
 - 验证文件类型（仅允许图片格式）
 - 验证文件大小（最大 10MB）
 - 支持批量上传
-- 自动生成文件路径（品牌/时间戳-文件名）
-- 返回上传结果和访问 URL
+- 自动生成文件路径（`userId/brand/时间戳-文件名.jpg`）
+- 返回上传结果和访问 URL（预签名 URL）
 
-**API 端点：** `POST /upload`
+**API 端点：**
+- `POST /upload/prepare`
+- `POST /upload/complete`
+- `POST /upload`（旧 Base64 上传兼容路径，不推荐，可能触发 413）
+
+**说明：**
+- 服务器端图片处理使用 **Jimp（纯 JS）**，无需 Docker 容器构建。
+- 允许上传：JPG / PNG / WebP（不允许 GIF）。WebP 在后端通过 `@jsquash/webp` 解码后再进入处理流程。
 
 ### PFTryonGetListTool
 
@@ -47,7 +58,7 @@ lambda/
 - 按上传日期降序排序
 - 返回格式化的图片列表
 
-**API 端点：** `GET /list?brand=Nike`
+**API 端点：** `POST /list`（body: `{ "brand": "Nike" }` 可选）
 
 ### PFTryonDeleteTool
 
@@ -55,6 +66,7 @@ lambda/
 
 **特点：**
 - 支持批量删除
+- 支持按品牌一键删除（后端按 `userId/brand/` 前缀分页列出并删除，可覆盖 >1000 张）
 - 返回删除结果统计
 - 错误处理
 - 安全的删除操作

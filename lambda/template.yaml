@@ -14,8 +14,9 @@ Globals:
     Environment:
       Variables:
         S3_BUCKET_NAME: !Ref ImagesBucket
-        SIGNED_URL_EXPIRATION: '3600'
+        SIGNED_URL_EXPIRATION: '86400'
         TZ: 'Asia/Tokyo'
+        BRAND_TABLE_NAME: !Ref BrandTable
 
 # 参数
 Parameters:
@@ -29,6 +30,24 @@ Parameters:
 
 # 资源定义
 Resources:
+  BrandTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'PFTryonUserBrand-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      AttributeDefinitions:
+        - AttributeName: UserId
+          AttributeType: S
+        - AttributeName: BrandName
+          AttributeType: S
+      KeySchema:
+        - AttributeName: UserId
+          KeyType: HASH
+        - AttributeName: BrandName
+          KeyType: RANGE
+
   # S3 存储桶（私有）
   ImagesBucket:
     Type: AWS::S3::Bucket
@@ -64,6 +83,8 @@ Resources:
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref ImagesBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BrandTable
       Events:
         UploadApi:
           Type: Api
@@ -77,6 +98,34 @@ Resources:
           Type: Api
           Properties:
             Path: /upload
+            Method: OPTIONS
+            RestApiId: !Ref ApiGateway
+        UploadPrepareApi:
+          Type: Api
+          Properties:
+            Path: /upload/prepare
+            Method: POST
+            RestApiId: !Ref ApiGateway
+            Auth:
+              ApiKeyRequired: true
+        UploadPrepareOptions:
+          Type: Api
+          Properties:
+            Path: /upload/prepare
+            Method: OPTIONS
+            RestApiId: !Ref ApiGateway
+        UploadCompleteApi:
+          Type: Api
+          Properties:
+            Path: /upload/complete
+            Method: POST
+            RestApiId: !Ref ApiGateway
+            Auth:
+              ApiKeyRequired: true
+        UploadCompleteOptions:
+          Type: Api
+          Properties:
+            Path: /upload/complete
             Method: OPTIONS
             RestApiId: !Ref ApiGateway
 
@@ -149,6 +198,13 @@ Resources:
         MaxAge: "'3000'"
       Auth:
         ApiKeyRequired: true
+        DefaultAuthorizer: CognitoAuthorizer
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/ap-northeast-1_XdS3QRCmQ'
+            Identity:
+              Header: Authorization
 
   # API Key
   ApiKey:

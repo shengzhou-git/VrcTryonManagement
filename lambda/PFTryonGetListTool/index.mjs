@@ -16,6 +16,7 @@ const SIGNED_URL_EXPIRATION = parseInt(process.env.SIGNED_URL_EXPIRATION || '360
  * 主处理函数
  */
 export const handler = async (event) => {
+  console.log('Event:', JSON.stringify(event, null, 2));
   const startTime = Date.now();
   const requestId = event.requestContext?.requestId || 'unknown';
   
@@ -35,6 +36,23 @@ export const handler = async (event) => {
   }
 
   try {
+    const auth = getAuthInfo(event)
+    if (!auth.userId) {
+      return {
+        statusCode: 401,
+        headers: getCorsHeaders(),
+        body: JSON.stringify({ error: 'Unauthorized' }),
+      }
+    }
+    const ok = auth.groups?.includes('Admin') || auth.groups?.includes('ViewData')
+    if (!ok) {
+      return {
+        statusCode: 403,
+        headers: getCorsHeaders(),
+        body: JSON.stringify({ error: 'Forbidden' }),
+      }
+    }
+
     // 解析请求体（现在使用 POST）
     let body = {};
     if (event.body) {
@@ -46,7 +64,9 @@ export const handler = async (event) => {
     }
     
     const brand = body.brand;
-    const prefix = brand ? `${brand}/` : '';
+    // 按用户隔离：只允许列出当前 userId 前缀下的对象
+    const safeUserId = sanitizeForUrl(auth.userId)
+    const prefix = brand ? `${safeUserId}/${sanitizeForUrl(brand)}/` : `${safeUserId}/`;
 
     console.log(`[PFTryonGetListTool] 请求参数 - 品牌筛选: ${brand || '全部'}`);
     console.log(`[PFTryonGetListTool] S3 前缀: ${prefix || '(根目录)'}`);
@@ -82,9 +102,17 @@ export const handler = async (event) => {
         const metadata = await s3Client.send(headCommand);
 
         // 解析品牌名称（从路径中提取）
+        // Key 格式：userId/brand/filename
         const pathParts = object.Key.split('/');
-        const objectBrand = pathParts[0];
+        const objectUserId = pathParts[0] || '';
+        const objectBrand = pathParts[1] || '';
         const fileName = pathParts[pathParts.length - 1];
+
+        // 二次校验：只处理当前用户自己的对象（防止前缀/配置异常导致越权）
+        if (objectUserId !== safeUserId) {
+          console.warn(`[PFTryonGetListTool] 跳过非本用户对象: ${object.Key}`)
+          continue
+        }
 
         // 生成预签名 URL（临时访问链接）
         const getCommand = new GetObjectCommand({
@@ -114,7 +142,8 @@ export const handler = async (event) => {
           : fileName;
 
         images.push({
-          id: object.ETag.replace(/"/g, ''),
+          // 使用 Key 保证唯一性（ETag 可能重复，导致前端 key 冲突）
+          id: object.Key,
           name: decodedFileName,
           brand: decodedBrand,
           url: signedUrl,
@@ -149,7 +178,7 @@ export const handler = async (event) => {
         images,
         total: images.length,
         brand: brand || '全部',
-        note: '图片 URL 为临时访问链接，有效期 1 小时'
+        note: `图片 URL 为临时访问链接，有效期约 ${Math.round(SIGNED_URL_EXPIRATION / 3600)} 小时`
       })
     };
 
@@ -171,6 +200,30 @@ export const handler = async (event) => {
     };
   }
 };
+
+function getAuthInfo(event) {
+  const claims = event?.requestContext?.authorizer?.claims || {}
+  const userId = claims.sub || claims['cognito:username'] || null
+  const email = claims.email || null
+  const rawGroups = claims['cognito:groups'] || null
+  const groups = normalizeGroups(rawGroups)
+  return { userId, email, groups }
+}
+
+function normalizeGroups(raw) {
+  if (!raw) return null
+  if (Array.isArray(raw)) return raw
+  if (typeof raw === 'string') return raw.split(',').map((s) => s.trim()).filter(Boolean)
+  return null
+}
+
+function sanitizeForUrl(str) {
+  str = String(str || '').trim()
+  str = str.replace(/\s+/g, '-')
+  str = encodeURIComponent(str)
+  str = str.replace(/%20/g, '-')
+  return str
+}
 
 /**
  * 解码 Base64 编码的元数据

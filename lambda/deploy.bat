@@ -1,33 +1,42 @@
 @echo off
 chcp 65001 >nul
 echo =========================================
-echo AWS Lambda 部署脚本 (SAM)
+echo AWS Lambda Deployment Script (SAM)
 echo =========================================
 echo.
 
-REM 检查 AWS CLI 是否安装
+REM Check AWS CLI
 where aws >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
-    echo [错误] 未找到 AWS CLI，请先安装！
-    echo 下载地址: https://aws.amazon.com/cli/
+    echo [ERROR] AWS CLI not found. Please install it first.
+    echo Download: https://aws.amazon.com/cli/
     pause
     exit /b 1
 )
 
-REM 检查 SAM CLI 是否安装
+REM Check SAM CLI
 where sam >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
-    echo [错误] 未找到 AWS SAM CLI，请先安装！
-    echo 下载地址: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html
+    echo [ERROR] AWS SAM CLI not found. Please install it first.
+    echo Download: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html
     pause
     exit /b 1
 )
 
 echo.
-echo [1/3] 选择部署环境
-echo   1) dev  (开发环境)
-echo   2) prod (生产环境)
-set /p choice="请输入选项 [1-2]: "
+echo [0/3] Install dependencies (per function)
+call :npm_install_if_needed "PFTryonUploadTool"
+if %ERRORLEVEL% NEQ 0 exit /b 1
+call :npm_install_if_needed "PFTryonGetListTool"
+if %ERRORLEVEL% NEQ 0 exit /b 1
+call :npm_install_if_needed "PFTryonDeleteTool"
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
+echo.
+echo [1/3] Select deployment environment
+echo   1) dev  (development)
+echo   2) prod (production)
+set /p choice="Enter option [1-2]: "
 
 if "%choice%"=="1" (
     set ENV=dev
@@ -36,7 +45,7 @@ if "%choice%"=="1" (
     set ENV=prod
     set STACK_NAME=vrc-tryon-prod
 ) else (
-    echo 使用默认环境: prod
+    echo Using default environment: prod
     set ENV=prod
     set STACK_NAME=vrc-tryon-prod
 )
@@ -45,16 +54,16 @@ echo.
 echo ***********Build Start***********
 call sam build
 if %ERRORLEVEL% NEQ 0 (
-    echo [错误] SAM 构建失败！
+    echo [ERROR] SAM build failed.
     pause
     exit /b 1
 )
 
 echo.
 echo ***********Deploy Start***********
-echo 环境: %ENV%
-echo 堆栈名称: %STACK_NAME%
-echo 区域: ap-northeast-1
+echo Environment: %ENV%
+echo Stack name : %STACK_NAME%
+echo Region     : ap-northeast-1
 echo.
 call sam deploy ^
     --stack-name %STACK_NAME% ^
@@ -67,21 +76,21 @@ call sam deploy ^
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
-    echo [错误] 部署失败！
-    echo 请检查:
-    echo   1. AWS 凭证是否正确配置 (运行 aws configure)
-    echo   2. IAM 权限是否足够
-    echo   3. CloudFormation 控制台的错误信息
+    echo [ERROR] Deployment failed.
+    echo Please check:
+    echo   1. AWS credentials (run: aws configure)
+    echo   2. IAM permissions
+    echo   3. CloudFormation console error details
     pause
     exit /b 1
 )
 
 echo.
 echo =========================================
-echo 部署成功！
+echo Deployment succeeded!
 echo =========================================
 echo.
-echo 获取 API 端点地址:
+echo Fetching API endpoint (ApiUrl output):
 call aws cloudformation describe-stacks ^
     --stack-name %STACK_NAME% ^
     --region ap-northeast-1 ^
@@ -89,7 +98,35 @@ call aws cloudformation describe-stacks ^
     --output text
 
 echo.
-echo 请将上面的 API URL 添加到前端的 .env.local 文件:
-echo NEXT_PUBLIC_API_URL=<API_URL>
+echo Add the API URL above to your frontend .env.local:
+echo AWS_API_URL=<API_URL>
+echo.
+echo NOTE:
+echo - Do NOT use NEXT_PUBLIC_* for secrets.
+echo - If you enabled API Key auth, also set:
+echo   AWS_API_KEY=<YOUR_API_KEY>
 echo.
 pause
+
+goto :eof
+
+:npm_install_if_needed
+set "DIR=%~1"
+if not exist "%DIR%\package.json" (
+  echo [WARN] %DIR%\package.json not found, skip npm install.
+  exit /b 0
+)
+if exist "%DIR%\node_modules\" (
+  echo [OK] %DIR% dependencies already installed.
+  exit /b 0
+)
+echo [RUN] npm install in %DIR%
+pushd "%DIR%"
+call npm install
+if %ERRORLEVEL% NEQ 0 (
+  popd
+  echo [ERROR] npm install failed in %DIR%
+  exit /b 1
+)
+popd
+exit /b 0

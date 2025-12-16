@@ -1,5 +1,5 @@
 # 依赖
-/node_modules
+node_modules/
 /.pnp
 .pnp.js
 
@@ -39,9 +39,12 @@ pnpm-debug.log*
 Thumbs.db
 
 # Lambda
-lambda/node_modules/
+
 lambda/function.zip
 lambda/.serverless/
+.aws-sam/
+lambda/.aws-sam/
+**/.aws-sam/
 
 # 临时文件
 *.tmp

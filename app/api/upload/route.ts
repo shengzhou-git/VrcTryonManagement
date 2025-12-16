@@ -10,6 +10,15 @@ const AWS_API_KEY = process.env.AWS_API_KEY || ''
 
 export async function POST(request: NextRequest) {
   try {
+    if (!AWS_API_URL || !AWS_API_KEY) {
+      return NextResponse.json({ error: '服务器未配置 AWS_API_URL / AWS_API_KEY' }, { status: 500 })
+    }
+
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     const body = await request.json()
 
     // 调用 AWS API Gateway
@@ -18,6 +27,7 @@ export async function POST(request: NextRequest) {
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': AWS_API_KEY,
+        Authorization: authHeader,
       },
       body: JSON.stringify(body),
     })

@@ -24,6 +24,23 @@ export interface Translations {
     error: string
     retry: string
   }
+
+  // 登录页面
+  login: {
+    title: string
+    subtitle: string
+    emailLabel: string
+    emailPlaceholder: string
+    passwordLabel: string
+    passwordPlaceholder: string
+    showPassword: string
+    hidePassword: string
+    signIn: string
+    signingIn: string
+    signInFailed: string
+    backHome: string
+    changePassword: string
+  }
   
   // 首页
   home: {
@@ -101,6 +118,11 @@ export interface Translations {
     deleteConfirm: string
     deleteSuccess: string
     deleteFailed: string
+    deleteBrandAll: string
+    deleteBrandConfirm: string
+    deleteBrandDeleting: string
+    deleteBrandSuccess: string
+    deleteBrandFailed: string
     downloadFailed: string
     imageInfo: {
       brand: string
@@ -129,6 +151,21 @@ export const translations: Record<Language, Translations> = {
       success: '成功',
       error: '错误',
       retry: '重试',
+    },
+    login: {
+      title: '登录',
+      subtitle: '如需账号或登录方式，请联系管理员。',
+      emailLabel: '邮箱',
+      emailPlaceholder: '请输入邮箱',
+      passwordLabel: '密码',
+      passwordPlaceholder: '请输入密码',
+      showPassword: '显示密码',
+      hidePassword: '隐藏密码',
+      signIn: '登录',
+      signingIn: '登录中...',
+      signInFailed: '登录失败',
+      backHome: '返回首页',
+      changePassword: '修改密码',
     },
     home: {
       welcome: '欢迎使用服装图片管理系统',
@@ -201,6 +238,11 @@ export const translations: Record<Language, Translations> = {
       deleteConfirm: '确定要删除这张图片吗？',
       deleteSuccess: '删除成功',
       deleteFailed: '删除失败',
+      deleteBrandAll: '删除该品牌全部',
+      deleteBrandConfirm: '确定要删除该品牌下所有图片吗？',
+      deleteBrandDeleting: '批量删除中...',
+      deleteBrandSuccess: '品牌图片已全部删除',
+      deleteBrandFailed: '品牌批量删除失败',
       downloadFailed: '下载失败，请重试',
       imageInfo: {
         brand: '品牌',
@@ -228,6 +270,21 @@ export const translations: Record<Language, Translations> = {
       success: 'Success',
       error: 'Error',
       retry: 'Retry',
+    },
+    login: {
+      title: 'Login',
+      subtitle: 'Please contact the administrator to obtain an account or login method.',
+      emailLabel: 'Email',
+      emailPlaceholder: 'Enter your email',
+      passwordLabel: 'Password',
+      passwordPlaceholder: 'Enter your password',
+      showPassword: 'Show password',
+      hidePassword: 'Hide password',
+      signIn: 'Sign In',
+      signingIn: 'Signing In...',
+      signInFailed: 'Login failed',
+      backHome: 'Back to Home',
+      changePassword: 'Change Password',
     },
     home: {
       welcome: 'Welcome to Clothing Image Management System',
@@ -300,6 +357,11 @@ export const translations: Record<Language, Translations> = {
       deleteConfirm: 'Are you sure you want to delete this image?',
       deleteSuccess: 'Deleted successfully',
       deleteFailed: 'Delete failed',
+      deleteBrandAll: 'Delete all in brand',
+      deleteBrandConfirm: 'Are you sure you want to delete all images under this brand?',
+      deleteBrandDeleting: 'Deleting...',
+      deleteBrandSuccess: 'All images under this brand have been deleted',
+      deleteBrandFailed: 'Failed to delete brand images',
       downloadFailed: 'Download failed, please try again',
       imageInfo: {
         brand: 'Brand',
@@ -327,6 +389,21 @@ export const translations: Record<Language, Translations> = {
       success: '成功',
       error: 'エラー',
       retry: '再試行',
+    },
+    login: {
+      title: 'ログイン',
+      subtitle: 'アカウントやログイン方法については管理者にお問い合わせください。',
+      emailLabel: 'メールアドレス',
+      emailPlaceholder: 'メールアドレスを入力してください',
+      passwordLabel: 'パスワード',
+      passwordPlaceholder: 'パスワードを入力してください',
+      showPassword: 'パスワードを表示',
+      hidePassword: 'パスワードを非表示',
+      signIn: 'ログイン',
+      signingIn: 'ログイン中...',
+      signInFailed: 'ログインに失敗しました',
+      backHome: 'ホームへ戻る',
+      changePassword: 'パスワード変更',
     },
     home: {
       welcome: '衣類画像管理システムへようこそ',
@@ -399,6 +476,11 @@ export const translations: Record<Language, Translations> = {
       deleteConfirm: 'この画像を削除してもよろしいですか？',
       deleteSuccess: '削除成功',
       deleteFailed: '削除失敗',
+      deleteBrandAll: 'このブランドを一括削除',
+      deleteBrandConfirm: 'このブランド内の画像をすべて削除しますか？',
+      deleteBrandDeleting: '削除中...',
+      deleteBrandSuccess: 'ブランド内の画像をすべて削除しました',
+      deleteBrandFailed: 'ブランドの一括削除に失敗しました',
       downloadFailed: 'ダウンロード失敗、再試行してください',
       imageInfo: {
         brand: 'ブランド',

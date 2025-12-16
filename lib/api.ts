@@ -1,3 +1,5 @@
+import { getIdTokenOrThrow } from '@/lib/cognito-auth'
+
 /**
  * API 客户端 - 通过 Next.js API 路由与后端通信
  * API Key 在服务器端，不会暴露到浏览器
@@ -8,7 +10,6 @@ const API_BASE_URL = '/api'; // 使用本地 Next.js API 路由
 export interface UploadFileData {
   name: string
   type: string
-  content: string // Base64 编码
   size: number
 }
 
@@ -28,6 +29,65 @@ export interface UploadResponse {
     success: number
     failed: number
   }
+}
+
+type UploadPrepareItem = {
+  fileName: string
+  success: boolean
+  key?: string
+  uploadUrl?: string
+  method?: 'PUT'
+  headers?: Record<string, string>
+  error?: string
+}
+
+type UploadPrepareResponse = {
+  brandName: string
+  items: UploadPrepareItem[]
+  note?: string
+  error?: string
+}
+
+export type UploadFileProgressEvent = {
+  fileName: string
+  // 解决同名文件：用 name|size|lastModified 做更稳定的本地匹配 key
+  fileKey?: string
+  phase: 'prepare' | 'upload' | 'complete'
+  status: 'uploading' | 'success' | 'error'
+  progress: number
+  error?: string
+}
+
+export type UploadImagesOptions = {
+  onFileProgress?: (e: UploadFileProgressEvent) => void
+  concurrency?: number
+}
+
+function putToS3WithProgress(url: string, file: File, onProgress?: (p: number) => void): Promise<{ ok: boolean; status: number }> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', url, true)
+    xhr.upload.onprogress = (evt) => {
+      if (!evt.lengthComputable) return
+      const p = Math.max(0, Math.min(99, Math.round((evt.loaded / evt.total) * 99)))
+      onProgress?.(p)
+    }
+    xhr.onload = () => resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status })
+    xhr.onerror = () => resolve({ ok: false, status: xhr.status || 0 })
+    xhr.send(file)
+  })
+}
+
+async function runPool<T>(items: T[], worker: (item: T) => Promise<void>, concurrency: number): Promise<void> {
+  const c = Math.max(1, Math.floor(concurrency || 1))
+  let idx = 0
+  const runners = new Array(Math.min(c, items.length)).fill(0).map(async () => {
+    while (idx < items.length) {
+      const cur = items[idx++]
+      await worker(cur)
+    }
+  })
+  await Promise.all(runners)
 }
 
 export interface ImageItem {
@@ -54,39 +114,126 @@ export interface ListImagesResponse {
  */
 export async function uploadImages(
   brandName: string,
-  files: File[]
+  files: File[],
+  options: UploadImagesOptions = {}
 ): Promise<UploadResponse> {
   try {
-    // 将文件转换为 Base64
-    const fileDataPromises = files.map(async (file) => {
-      const base64 = await fileToBase64(file)
-      return {
-        name: file.name,
-        type: file.type,
-        content: base64,
-        size: file.size,
-      }
-    })
+    const token = await getIdTokenOrThrow()
 
-    const fileData = await Promise.all(fileDataPromises)
+    // 1) prepare：申请 presigned uploadUrl
+    const preparePayload: { brandName: string; files: UploadFileData[] } = {
+      brandName,
+      files: files.map((f) => ({ name: f.name, type: f.type, size: f.size })),
+    }
 
-    const response = await fetch(`${API_BASE_URL}/upload`, {
+    const prepareResp = await fetch(`${API_BASE_URL}/upload/prepare`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({
-        brandName,
-        files: fileData,
-      }),
+      body: JSON.stringify(preparePayload),
     })
 
-    if (!response.ok) {
-      const error = await response.json()
-      throw new Error(error.error || '上传失败')
+    const prepareData = (await prepareResp.json()) as UploadPrepareResponse
+    if (!prepareResp.ok) {
+      throw new Error(prepareData?.error || '上传准备失败')
     }
 
-    return await response.json()
+    const fileByName = new Map(files.map((f) => [f.name, f]))
+    const results: UploadResponse['results'] = []
+    const uploaded: Array<{ key: string; fileName: string; mimeType?: string }> = []
+    const onFileProgress = options.onFileProgress
+    const concurrency = options.concurrency ?? 3
+
+    // 2) 直传到 S3：PUT 二进制
+    await runPool(
+      prepareData.items || [],
+      async (item) => {
+        const fileName = item.fileName
+        const localFile = fileByName.get(fileName)
+        const fileKey = localFile ? `${localFile.name}|${localFile.size}|${localFile.lastModified}` : undefined
+
+        onFileProgress?.({ fileName, fileKey, phase: 'prepare', status: item.success ? 'uploading' : 'error', progress: 0, error: item.error })
+
+        if (!item.success || !item.uploadUrl || !item.key) {
+          results.push({ fileName, success: false, error: item.error || '上传准备失败' })
+          onFileProgress?.({ fileName, fileKey, phase: 'prepare', status: 'error', progress: 0, error: item.error || '上传准备失败' })
+          return
+        }
+        if (!localFile) {
+          results.push({ fileName, success: false, key: item.key, error: '找不到对应的本地文件' })
+          onFileProgress?.({ fileName, fileKey, phase: 'upload', status: 'error', progress: 0, error: '找不到对应的本地文件' })
+          return
+        }
+
+        onFileProgress?.({ fileName, fileKey, phase: 'upload', status: 'uploading', progress: 1 })
+        const putRes = await putToS3WithProgress(item.uploadUrl, localFile, (p) => {
+          onFileProgress?.({ fileName, fileKey, phase: 'upload', status: 'uploading', progress: p })
+        })
+
+        if (!putRes.ok) {
+          results.push({ fileName, success: false, key: item.key, error: `S3 上传失败（${putRes.status}）` })
+          onFileProgress?.({ fileName, fileKey, phase: 'upload', status: 'error', progress: 0, error: `S3 上传失败（${putRes.status}）` })
+          return
+        }
+
+        results.push({ fileName, success: true, key: item.key, size: localFile.size })
+        uploaded.push({ key: item.key, fileName, mimeType: localFile.type || undefined })
+        // complete 阶段再置 100
+        onFileProgress?.({ fileName, fileKey, phase: 'upload', status: 'uploading', progress: 99 })
+      },
+      concurrency
+    )
+
+    // 3) complete：登记 + 返回预签名 GET URL
+    if (uploaded.length > 0) {
+      const completeResp = await fetch(`${API_BASE_URL}/upload/complete`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ brandName, items: uploaded }),
+      })
+
+      const completeData = (await completeResp.json().catch(() => null)) as any
+      if (!completeResp.ok) {
+        const msg = completeData?.error || '上传完成登记失败'
+        // 登记失败：整体当作失败（否则 UI 会认为成功但列表里查不到）
+        for (const r of results) {
+          if (r.success) {
+            r.success = false
+            r.error = msg
+            onFileProgress?.({ fileName: r.fileName, phase: 'complete', status: 'error', progress: 0, error: msg })
+          }
+        }
+      } else if (completeData?.results && Array.isArray(completeData.results)) {
+        const byKey = new Map<string, any>(completeData.results.map((r: any) => [String(r.key), r]))
+        for (const r of results) {
+          if (!r.key) continue
+          const mapped = byKey.get(r.key)
+          if (mapped?.success && mapped.url) {
+            r.url = mapped.url
+            onFileProgress?.({ fileName: r.fileName, phase: 'complete', status: 'success', progress: 100 })
+          } else if (mapped && !mapped.success) {
+            r.success = false
+            r.error = mapped.error || '上传完成登记失败'
+            onFileProgress?.({ fileName: r.fileName, phase: 'complete', status: 'error', progress: 0, error: r.error })
+          }
+        }
+      }
+    }
+
+    const success = results.filter((r) => r.success).length
+    const failed = results.length - success
+
+    return {
+      message: `上传完成：成功 ${success} 个，失败 ${failed} 个`,
+      brandName,
+      results,
+      summary: { total: results.length, success, failed },
+    }
   } catch (error) {
     console.error('Upload error:', error)
     throw error
@@ -103,10 +250,12 @@ export async function listImages(brand?: string): Promise<ListImagesResponse> {
       body.brand = brand
     }
     
+    const token = await getIdTokenOrThrow()
     const response = await fetch(`${API_BASE_URL}/list`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(body),
     })
@@ -128,10 +277,12 @@ export async function listImages(brand?: string): Promise<ListImagesResponse> {
  */
 export async function deleteImages(keys: string[]): Promise<void> {
   try {
+    const token = await getIdTokenOrThrow()
     const response = await fetch(`${API_BASE_URL}/delete`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ keys }),
     })
@@ -149,24 +300,25 @@ export async function deleteImages(keys: string[]): Promise<void> {
 }
 
 /**
- * 将 File 转换为 Base64
+ * 一键删除某个品牌下的全部图片（后端按前缀分页删除，可覆盖 >1000 张）
  */
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    
-    reader.onload = () => {
-      const result = reader.result as string
-      // 移除 data URL 前缀
-      const base64 = result.split(',')[1]
-      resolve(base64)
-    }
-    
-    reader.onerror = () => {
-      reject(new Error('读取文件失败'))
-    }
-    
-    reader.readAsDataURL(file)
+export async function deleteBrandImages(brandName: string): Promise<{ deletedCount: number }> {
+  const token = await getIdTokenOrThrow()
+  const response = await fetch(`${API_BASE_URL}/delete`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ brandName }),
   })
+
+  const data = await response.json().catch(() => null as any)
+  if (!response.ok) {
+    throw new Error((data && data.error) || '品牌批量删除失败')
+  }
+  return { deletedCount: Number(data?.deletedCount || 0) }
 }
+
+// 已切换为“后端签名 + 前端直传 S3”，不再需要 base64 编码上传
 
