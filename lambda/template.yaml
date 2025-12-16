@@ -33,20 +33,31 @@ Resources:
   BrandTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Sub 'PFTryonUserBrand-${Environment}'
+      TableName: !Sub 'PFTryonUserBrand-v2-${Environment}'
       BillingMode: PAY_PER_REQUEST
       SSESpecification:
         SSEEnabled: true
       AttributeDefinitions:
         - AttributeName: UserId
           AttributeType: S
+        - AttributeName: BrandId
+          AttributeType: S
         - AttributeName: BrandName
           AttributeType: S
       KeySchema:
         - AttributeName: UserId
           KeyType: HASH
-        - AttributeName: BrandName
+        - AttributeName: BrandId
           KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: BrandNameIndex
+          KeySchema:
+            - AttributeName: UserId
+              KeyType: HASH
+            - AttributeName: BrandName
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
   # S3 存储桶（私有）
   ImagesBucket:

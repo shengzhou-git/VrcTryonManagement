@@ -5,8 +5,9 @@
  */
 
 import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
-import { DynamoDBClient, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { randomUUID } from 'crypto';
 
 const s3Client = new S3Client({ region: process.env.AWS_REGION || 'ap-northeast-1' });
 const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'ap-northeast-1' });
@@ -69,7 +70,10 @@ export const handler = async (event) => {
         return createErrorResponse(400, '请至少上传一个文件')
       }
 
-      const safeBrandName = sanitizeForUrl(String(brandName))
+      // 获取或创建品牌 ID
+      const brandId = await getBrandId(auth.userId, String(brandName).trim(), auth.email, auth.groups)
+      console.log(`[PFTryonUploadTool] prepare brandId - requestId=${requestId}, userId=${auth.userId}, brandName=${brandName}, brandId=${brandId}`)
+
       const safeUserId = sanitizeForUrl(String(auth.userId))
 
       const items = []
@@ -97,7 +101,8 @@ export const handler = async (event) => {
         const timestamp = Date.now()
         const safeFileName = sanitizeFileName(name)
         const jpgFileName = replaceFileExtToJpg(safeFileName)
-        const key = `${safeUserId}/${safeBrandName}/${timestamp}-${jpgFileName}`
+        // 使用 brandId 而不是 brandName 构建 S3 key
+        const key = `${safeUserId}/${brandId}/${timestamp}-${jpgFileName}`
 
         // 预签名 PUT：允许前端直接上传二进制
         // 注意：浏览器端 PUT 时如果携带了额外 headers，可能导致与签名不匹配而 403
@@ -120,13 +125,14 @@ export const handler = async (event) => {
 
       const okCount = items.filter((x) => x?.success).length
       const badCount = items.length - okCount
-      console.log(`[PFTryonUploadTool] prepare done - requestId=${requestId}, userId=${auth.userId}, ok=${okCount}, failed=${badCount}, ms=${Date.now() - t0}`)
+      console.log(`[PFTryonUploadTool] prepare done - requestId=${requestId}, userId=${auth.userId}, brandId=${brandId}, ok=${okCount}, failed=${badCount}, ms=${Date.now() - t0}`)
 
       return {
         statusCode: 200,
         headers: getCorsHeaders(),
         body: JSON.stringify({
           brandName,
+          brandId, // 返回 brandId 给前端
           items,
           note: '请在 15 分钟内使用 uploadUrl 直传到 S3；完成后调用 /upload/complete 进行登记',
         }),
@@ -137,13 +143,14 @@ export const handler = async (event) => {
     if (path.endsWith('/upload/complete')) {
       const t0 = Date.now()
       const body = safeJsonParse(event.body) || {}
-      const { brandName, keys, items } = body
+      const { brandName, brandId, keys, items } = body
       console.log(
-        `[PFTryonUploadTool] complete start - requestId=${requestId}, userId=${auth.userId}, brand=${String(brandName || '')}, keys=${Array.isArray(keys) ? keys.length : 0}, items=${Array.isArray(items) ? items.length : 0}`
+        `[PFTryonUploadTool] complete start - requestId=${requestId}, userId=${auth.userId}, brandName=${String(brandName || '')}, brandId=${String(brandId || '')}, keys=${Array.isArray(keys) ? keys.length : 0}, items=${Array.isArray(items) ? items.length : 0}`
       )
 
-      if (!brandName || !String(brandName).trim()) {
-        return createErrorResponse(400, '品牌名称不能为空')
+      // brandId 是必需的（由 /upload/prepare 返回）
+      if (!brandId || !String(brandId).trim()) {
+        return createErrorResponse(400, 'brandId 不能为空')
       }
       const keyList = Array.isArray(items) ? items.map((x) => String(x?.key || '')).filter(Boolean) : keys
       if (!keyList || !Array.isArray(keyList) || keyList.length === 0) {
@@ -199,28 +206,41 @@ export const handler = async (event) => {
             throw new Error(`不支持的文件类型: ${ct}`)
           }
 
-          const { Jimp, MIME_JPEG } = await getJimpModule()
+          const { Jimp, StandardJimp, MIME_JPEG, hasWebPPlugin } = await getJimpModule()
           let original
           try {
             const isWebp = ct === 'image/webp'
 
             if (isWebp) {
-              // 优先尝试让 Jimp 自己解码 WebP，失败再使用 @jsquash/webp 兜底
-              try {
-                original = await Jimp.read(inputBuffer)
-              } catch {
+              console.log(`[PFTryonUploadTool] Processing WebP image - key=${key}, hasWebPPlugin=${hasWebPPlugin}`)
+
+              if (hasWebPPlugin) {
+                // 使用 Jimp WebP 插件解码
+                try {
+                  original = await Jimp.read(inputBuffer)
+                  console.log(`[PFTryonUploadTool] WebP decoded successfully using Jimp WebP plugin - key=${key}`)
+                } catch (pluginError) {
+                  console.warn(`[PFTryonUploadTool] Jimp WebP plugin failed, trying @jsquash/webp fallback - key=${key}, error=${pluginError?.message}`)
+                  const fallback = await decodeWebpToJimp(Jimp, inputBuffer)
+                  original = fallback
+                  console.log(`[PFTryonUploadTool] WebP decoded successfully using @jsquash/webp fallback - key=${key}`)
+                }
+              } else {
+                // 没有 WebP 插件，直接使用 @jsquash/webp
+                console.log(`[PFTryonUploadTool] Using @jsquash/webp decoder (no plugin available) - key=${key}`)
                 const fallback = await decodeWebpToJimp(Jimp, inputBuffer)
                 original = fallback
+                console.log(`[PFTryonUploadTool] WebP decoded successfully using @jsquash/webp - key=${key}`)
               }
             } else {
-              // 非 WebP：统一走 Jimp.read
-              original = await Jimp.read(inputBuffer)
+              // 非 WebP：使用标准 Jimp，避免 WebP 插件的副作用（如 fetch failed）
+              original = await StandardJimp.read(inputBuffer)
             }
           } catch (e) {
             console.error(
-              `[PFTryonUploadTool] Jimp.read failed - key=${key}, ct=${ct}, error=${e?.message || e}`
+              `[PFTryonUploadTool] Image decoding failed - key=${key}, ct=${ct}, size=${inputBuffer?.length || 0} bytes, error=${e?.message || e}`
             )
-            throw e
+            throw new Error(`图片解码失败 (${ct}): ${e?.message || e}`)
           }
 
           // 部分图片有 EXIF 方向信息（主要是手机照片）
@@ -250,7 +270,8 @@ export const handler = async (event) => {
           // 写入 metadata（供 GetListTool 展示） + 覆盖写回同一 key
           const originalName = nameByKey.get(key) || key.split('/').slice(-1)[0] || ''
           const meta = {
-            brand: Buffer.from(String(brandName), 'utf8').toString('base64'),
+            brand: Buffer.from(String(brandName || ''), 'utf8').toString('base64'),
+            brandid: Buffer.from(String(brandId), 'utf8').toString('base64'),
             originalname: Buffer.from(String(originalName), 'utf8').toString('base64'),
             owner: Buffer.from(String(auth.userId), 'utf8').toString('base64'),
             uploaddate: new Date().toISOString(),
@@ -281,7 +302,7 @@ export const handler = async (event) => {
       const successCount = results.filter((r) => r.success).length
       const failCount = results.length - successCount
 
-      // 关联用户与品牌（DynamoDB）
+      // 更新品牌上传计数（DynamoDB）
       if (BRAND_TABLE_NAME && successCount > 0) {
         try {
           const now = new Date().toISOString()
@@ -289,10 +310,10 @@ export const handler = async (event) => {
             TableName: BRAND_TABLE_NAME,
             Key: {
               UserId: { S: auth.userId },
-              BrandName: { S: String(brandName) },
+              BrandId: { S: String(brandId) },
             },
             UpdateExpression:
-              'SET CreatedAt = if_not_exists(CreatedAt, :now), UpdatedAt = :now, Email = :email, Groups = :groups ADD UploadCount :inc',
+              'SET UpdatedAt = :now, Email = :email, Groups = :groups ADD UploadCount :inc',
             ExpressionAttributeValues: {
               ':now': { S: now },
               ':email': { S: auth.email || '' },
@@ -301,9 +322,9 @@ export const handler = async (event) => {
             },
           })
           await ddbClient.send(cmd)
-          console.log(`[PFTryonUploadTool] DynamoDB 已记录用户品牌关联: user=${auth.userId}, brand=${brandName}, +${successCount}`)
+          console.log(`[PFTryonUploadTool] DynamoDB 已更新品牌上传计数: user=${auth.userId}, brandId=${brandId}, +${successCount}`)
         } catch (e) {
-          console.error('[PFTryonUploadTool] DynamoDB 记录失败:', e?.message || e)
+          console.error('[PFTryonUploadTool] DynamoDB 更新失败:', e?.message || e)
         }
       }
 
@@ -543,18 +564,45 @@ async function streamToBuffer(body) {
 let __jimpCache = null
 async function getJimpModule() {
   if (__jimpCache) return __jimpCache
-  const mod = await import('jimp')
 
-  // 兼容不同版本/导出形态
-  const Jimp = mod.Jimp || mod.default || mod
-  const MIME_JPEG = mod.MIME_JPEG || mod.JimpMime?.jpeg || 'image/jpeg'
+  try {
+    // 尝试导入 WebP 插件和创建自定义 Jimp 实例
+    const { createJimp } = await import('@jimp/core')
+    const webpModule = await import('@jimp/wasm-webp')
+    const webp = webpModule.default || webpModule // 兼容不同的导出方式
+    const mod = await import('jimp')
 
-  if (!Jimp || typeof Jimp.read !== 'function') {
-    throw new Error('Jimp_NOT_AVAILABLE')
+    // 获取默认格式和插件
+    const defaultFormats = mod.defaultFormats || []
+    const defaultPlugins = mod.defaultPlugins || []
+
+    // 创建包含 WebP 支持的自定义 Jimp 实例
+    const WebPJimp = createJimp({
+      formats: [...defaultFormats, webp],
+      plugins: defaultPlugins
+    })
+
+    const StandardJimp = mod.Jimp || mod.default || mod
+    const MIME_JPEG = mod.MIME_JPEG || mod.JimpMime?.jpeg || 'image/jpeg'
+
+    console.log('[PFTryonUploadTool] Jimp initialized with WebP plugin support')
+    __jimpCache = { Jimp: WebPJimp, StandardJimp, MIME_JPEG, hasWebPPlugin: true }
+    return __jimpCache
+  } catch (webpError) {
+    // 如果 WebP 插件加载失败，回退到标准 Jimp（不支持 WebP）
+    console.warn('[PFTryonUploadTool] Failed to load WebP plugin, falling back to standard Jimp:', webpError.message)
+
+    const mod = await import('jimp')
+    const Jimp = mod.Jimp || mod.default || mod
+    const MIME_JPEG = mod.MIME_JPEG || mod.JimpMime?.jpeg || 'image/jpeg'
+
+    if (!Jimp || typeof Jimp.read !== 'function') {
+      throw new Error('Jimp_NOT_AVAILABLE')
+    }
+
+    __jimpCache = { Jimp, StandardJimp: Jimp, MIME_JPEG, hasWebPPlugin: false }
+    return __jimpCache
   }
-
-  __jimpCache = { Jimp, MIME_JPEG }
-  return __jimpCache
 }
 
 function coverCenter(img, targetW, targetH) {
@@ -759,3 +807,66 @@ function getCorsHeaders() {
     'Access-Control-Allow-Methods': 'OPTIONS,POST,GET,DELETE'
   };
 }
+
+/**
+ * 获取或创建品牌 ID
+ * 通过 GSI 查询品牌名称，如果不存在则创建新品牌
+ */
+async function getBrandId(userId, brandName, email, groups) {
+  try {
+    // 通过 GSI 查询品牌名称
+    const queryCmd = new QueryCommand({
+      TableName: BRAND_TABLE_NAME,
+      IndexName: 'BrandNameIndex',
+      KeyConditionExpression: 'UserId = :userId AND BrandName = :brandName',
+      ExpressionAttributeValues: {
+        ':userId': { S: userId },
+        ':brandName': { S: brandName }
+      },
+      Limit: 1
+    })
+
+    const result = await ddbClient.send(queryCmd)
+
+    if (result.Items && result.Items.length > 0) {
+      // 品牌已存在，返回现有的 BrandId
+      const brandId = result.Items[0].BrandId?.S
+      console.log(`[getBrandId] Found existing brand - userId=${userId}, brandName=${brandName}, brandId=${brandId}`)
+      return brandId
+    }
+
+    // 品牌不存在，创建新品牌
+    const newBrandId = randomUUID()
+    await createBrand(userId, newBrandId, brandName, email, groups)
+    console.log(`[getBrandId] Created new brand - userId=${userId}, brandName=${brandName}, brandId=${newBrandId}`)
+    return newBrandId
+  } catch (error) {
+    console.error(`[getBrandId] Error - userId=${userId}, brandName=${brandName}, error=${error.message}`)
+    throw error
+  }
+}
+
+/**
+ * 创建新品牌记录
+ */
+async function createBrand(userId, brandId, brandName, email, groups) {
+  const now = new Date().toISOString()
+  const cmd = new UpdateItemCommand({
+    TableName: BRAND_TABLE_NAME,
+    Key: {
+      UserId: { S: userId },
+      BrandId: { S: brandId }
+    },
+    UpdateExpression:
+      'SET BrandName = :brandName, CreatedAt = :now, UpdatedAt = :now, Email = :email, Groups = :groups, UploadCount = :zero',
+    ExpressionAttributeValues: {
+      ':brandName': { S: brandName },
+      ':now': { S: now },
+      ':email': { S: email || '' },
+      ':groups': { S: (groups || []).join(',') },
+      ':zero': { N: '0' }
+    }
+  })
+  await ddbClient.send(cmd)
+}
+

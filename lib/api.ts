@@ -43,6 +43,7 @@ type UploadPrepareItem = {
 
 type UploadPrepareResponse = {
   brandName: string
+  brandId: string
   items: UploadPrepareItem[]
   note?: string
   error?: string
@@ -140,6 +141,10 @@ export async function uploadImages(
       throw new Error(prepareData?.error || '上传准备失败')
     }
 
+    // 提取 brandId（由后端返回）
+    const brandId = prepareData.brandId
+    console.log(`[uploadImages] Received brandId from prepare: ${brandId}`)
+
     const fileByName = new Map(files.map((f) => [f.name, f]))
     const results: UploadResponse['results'] = []
     const onFileProgress = options.onFileProgress
@@ -190,6 +195,7 @@ export async function uploadImages(
             },
             body: JSON.stringify({
               brandName,
+              brandId, // 传递 brandId 给 complete
               items: [{ key: item.key, fileName, mimeType: localFile.type || undefined }]
             }),
           })
