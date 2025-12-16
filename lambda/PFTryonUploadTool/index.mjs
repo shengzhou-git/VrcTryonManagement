@@ -240,11 +240,12 @@ export const handler = async (event) => {
           )
 
           // 统一输出 JPG：透明背景铺白（PNG）
-          const bg = new Jimp(OUTPUT_WIDTH, OUTPUT_HEIGHT, 0xffffffff)
+          // Jimp v1 requires object argument: { width, height, color }
+          const bg = new Jimp({ width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, color: 0xffffffff })
           bg.composite(processed, 0, 0)
           if (typeof bg.quality === 'function') bg.quality(90)
 
-          const out = await bg.getBufferAsync(MIME_JPEG)
+          const out = await bg.getBuffer(MIME_JPEG)
 
           // 写入 metadata（供 GetListTool 展示） + 覆盖写回同一 key
           const originalName = nameByKey.get(key) || key.split('/').slice(-1)[0] || ''

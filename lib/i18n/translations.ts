@@ -41,7 +41,7 @@ export interface Translations {
     backHome: string
     changePassword: string
   }
-  
+
   // 首页
   home: {
     welcome: string
@@ -70,7 +70,7 @@ export interface Translations {
     }
     footer: string
   }
-  
+
   // 上传页面
   upload: {
     title: string
@@ -97,8 +97,20 @@ export interface Translations {
     selectImages: string
     uploadSuccess: string
     uploadFailed: string
+    noImagesFound: string
+    imagesAdded: string
+    brandRequired: string
+    filesRequired: string
+    unknownError: string
+    description: string
+    hint: string
+    folderHint: string
+    brandName: string
+    dragDropHint: string
+    dropToUpload: string
+    cancel: string
   }
-  
+
   // 图片一览页面
   gallery: {
     title: string
@@ -176,7 +188,7 @@ export const translations: Record<Language, Translations> = {
       },
       galleryCard: {
         title: '图片一览',
-        description: '浏览所有已上传的服装图片，支持悬停预览和筛选',
+        description: '浏览所有已上传的服装图片，支持预览和筛选',
       },
       features: {
         design: {
@@ -207,7 +219,7 @@ export const translations: Record<Language, Translations> = {
       or: '或者',
       selectFiles: '选择文件',
       selectFolder: '选择文件夹',
-      supportFormats: '支持 JPG, PNG, GIF 等图片格式 • 支持批量上传和文件夹上传',
+      supportFormats: '支持 JPG, PNG, WebP 等图片格式 • 支持批量上传和文件夹上传',
       selectedFiles: '已选择的文件',
       clearAll: '清空全部',
       fileName: '文件名',
@@ -217,8 +229,20 @@ export const translations: Record<Language, Translations> = {
       uploadComplete: '上传完成',
       enterBrandName: '请输入品牌名称',
       selectImages: '请选择要上传的图片',
-      uploadSuccess: '上传成功',
+      uploadSuccess: '上传完成！成功：{success}，失败：{failed}',
       uploadFailed: '上传失败',
+      noImagesFound: '未找到可上传的图片文件（仅支持 JPG/PNG/WebP，不支持 GIF）',
+      imagesAdded: '已添加 {count} 张图片',
+      brandRequired: '请输入品牌名称',
+      filesRequired: '请选择要上传的图片',
+      unknownError: '未知错误',
+      description: '请填写品牌名称并选择要上传的图片文件或文件夹',
+      hint: '提示',
+      folderHint: '选择文件夹可以一次性上传整个文件夹内的所有图片，系统会自动筛选图片文件。',
+      brandName: '品牌名称',
+      dragDropHint: '支持拖放文件或文件夹',
+      dropToUpload: '释放以上传文件',
+      cancel: '取消',
     },
     gallery: {
       title: '图片一览',
@@ -251,7 +275,7 @@ export const translations: Record<Language, Translations> = {
       },
     },
   },
-  
+
   // 英文
   en: {
     common: {
@@ -295,7 +319,7 @@ export const translations: Record<Language, Translations> = {
       },
       galleryCard: {
         title: 'Image Gallery',
-        description: 'Browse all uploaded clothing images with hover preview and filtering',
+        description: 'Browse all uploaded clothing images with preview and filtering',
       },
       features: {
         design: {
@@ -326,7 +350,7 @@ export const translations: Record<Language, Translations> = {
       or: 'or',
       selectFiles: 'Select Files',
       selectFolder: 'Select Folder',
-      supportFormats: 'Support JPG, PNG, GIF formats • Batch upload and folder upload supported',
+      supportFormats: 'Support JPG, PNG, WebP formats • Batch upload and folder upload supported',
       selectedFiles: 'Selected Files',
       clearAll: 'Clear All',
       fileName: 'File Name',
@@ -336,8 +360,20 @@ export const translations: Record<Language, Translations> = {
       uploadComplete: 'Upload Complete',
       enterBrandName: 'Please enter brand name',
       selectImages: 'Please select images to upload',
-      uploadSuccess: 'Upload successful',
+      uploadSuccess: 'Upload complete! Success: {success}, Failed: {failed}',
       uploadFailed: 'Upload failed',
+      noImagesFound: 'No uploadable image files found (only JPG/PNG/WebP supported, GIF not supported)',
+      imagesAdded: 'Added {count} images',
+      brandRequired: 'Please enter brand name',
+      filesRequired: 'Please select images to upload',
+      unknownError: 'Unknown error',
+      description: 'Please enter brand name and select image files or folder to upload',
+      hint: 'Tip',
+      folderHint: 'Select a folder to upload all images in it at once. The system will automatically filter image files.',
+      brandName: 'Brand Name',
+      dragDropHint: 'Support drag and drop files or folder',
+      dropToUpload: 'Drop to upload files',
+      cancel: 'Cancel',
     },
     gallery: {
       title: 'Image Gallery',
@@ -370,7 +406,7 @@ export const translations: Record<Language, Translations> = {
       },
     },
   },
-  
+
   // 日文
   ja: {
     common: {
@@ -414,7 +450,7 @@ export const translations: Record<Language, Translations> = {
       },
       galleryCard: {
         title: '画像一覧',
-        description: 'アップロード済みの全ての衣類画像を閲覧。ホバープレビューとフィルタリングに対応',
+        description: 'アップロード済みの全ての衣類画像を閲覧。プレビューとフィルタリングに対応',
       },
       features: {
         design: {
@@ -445,7 +481,7 @@ export const translations: Record<Language, Translations> = {
       or: 'または',
       selectFiles: 'ファイル選択',
       selectFolder: 'フォルダ選択',
-      supportFormats: 'JPG、PNG、GIF形式対応 • 一括アップロードとフォルダアップロード対応',
+      supportFormats: 'JPG、PNG、WebP形式対応 • 一括アップロードとフォルダアップロード対応',
       selectedFiles: '選択されたファイル',
       clearAll: 'すべてクリア',
       fileName: 'ファイル名',
@@ -455,8 +491,20 @@ export const translations: Record<Language, Translations> = {
       uploadComplete: 'アップロード完了',
       enterBrandName: 'ブランド名を入力してください',
       selectImages: 'アップロードする画像を選択してください',
-      uploadSuccess: 'アップロード成功',
+      uploadSuccess: 'アップロード完了！成功：{success}、失敗：{failed}',
       uploadFailed: 'アップロード失敗',
+      noImagesFound: 'アップロード可能な画像ファイルが見つかりません（JPG/PNG/WebPのみ対応、GIF非対応）',
+      imagesAdded: '{count}枚の画像を追加しました',
+      brandRequired: 'ブランド名を入力してください',
+      filesRequired: 'アップロードする画像を選択してください',
+      unknownError: '不明なエラー',
+      description: 'ブランド名を入力し、アップロードする画像ファイルまたはフォルダを選択してください',
+      hint: 'ヒント',
+      folderHint: 'フォルダを選択すると、フォルダ内のすべての画像を一度にアップロードできます。システムが自動的に画像ファイルをフィルタリングします。',
+      brandName: 'ブランド名',
+      dragDropHint: 'ファイルまたはフォルダのドラッグ＆ドロップに対応',
+      dropToUpload: 'ドロップしてアップロード',
+      cancel: 'キャンセル',
     },
     gallery: {
       title: '画像一覧',

@@ -142,11 +142,10 @@ export async function uploadImages(
 
     const fileByName = new Map(files.map((f) => [f.name, f]))
     const results: UploadResponse['results'] = []
-    const uploaded: Array<{ key: string; fileName: string; mimeType?: string }> = []
     const onFileProgress = options.onFileProgress
     const concurrency = options.concurrency ?? 3
 
-    // 2) 直传到 S3：PUT 二进制
+    // 2) 直传到 S3 + 立即调用 complete（每个文件独立处理）
     await runPool(
       prepareData.items || [],
       async (item) => {
@@ -167,6 +166,7 @@ export async function uploadImages(
           return
         }
 
+        // 阶段1：上传到 S3
         onFileProgress?.({ fileName, fileKey, phase: 'upload', status: 'uploading', progress: 1 })
         const putRes = await putToS3WithProgress(item.uploadUrl, localFile, (p) => {
           onFileProgress?.({ fileName, fileKey, phase: 'upload', status: 'uploading', progress: p })
@@ -178,52 +178,49 @@ export async function uploadImages(
           return
         }
 
-        results.push({ fileName, success: true, key: item.key, size: localFile.size })
-        uploaded.push({ key: item.key, fileName, mimeType: localFile.type || undefined })
-        // complete 阶段再置 100
-        onFileProgress?.({ fileName, fileKey, phase: 'upload', status: 'uploading', progress: 99 })
+        // 阶段2：立即调用 complete 处理这个文件（resize、登记等）
+        onFileProgress?.({ fileName, fileKey, phase: 'complete', status: 'uploading', progress: 99 })
+
+        try {
+          const completeResp = await fetch(`${API_BASE_URL}/upload/complete`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              brandName,
+              items: [{ key: item.key, fileName, mimeType: localFile.type || undefined }]
+            }),
+          })
+
+          const completeData = (await completeResp.json().catch(() => null)) as any
+
+          if (!completeResp.ok) {
+            const msg = completeData?.error || '图片处理失败'
+            results.push({ fileName, success: false, key: item.key, error: msg })
+            onFileProgress?.({ fileName, fileKey, phase: 'complete', status: 'error', progress: 0, error: msg })
+            return
+          }
+
+          // 处理成功
+          const fileResult = completeData?.results?.[0]
+          if (fileResult?.success && fileResult.url) {
+            results.push({ fileName, success: true, key: item.key, url: fileResult.url, size: localFile.size })
+            onFileProgress?.({ fileName, fileKey, phase: 'complete', status: 'success', progress: 100 })
+          } else {
+            const msg = fileResult?.error || '图片处理失败'
+            results.push({ fileName, success: false, key: item.key, error: msg })
+            onFileProgress?.({ fileName, fileKey, phase: 'complete', status: 'error', progress: 0, error: msg })
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : '图片处理失败'
+          results.push({ fileName, success: false, key: item.key, error: msg })
+          onFileProgress?.({ fileName, fileKey, phase: 'complete', status: 'error', progress: 0, error: msg })
+        }
       },
       concurrency
     )
-
-    // 3) complete：登记 + 返回预签名 GET URL
-    if (uploaded.length > 0) {
-      const completeResp = await fetch(`${API_BASE_URL}/upload/complete`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ brandName, items: uploaded }),
-      })
-
-      const completeData = (await completeResp.json().catch(() => null)) as any
-      if (!completeResp.ok) {
-        const msg = completeData?.error || '上传完成登记失败'
-        // 登记失败：整体当作失败（否则 UI 会认为成功但列表里查不到）
-        for (const r of results) {
-          if (r.success) {
-            r.success = false
-            r.error = msg
-            onFileProgress?.({ fileName: r.fileName, phase: 'complete', status: 'error', progress: 0, error: msg })
-          }
-        }
-      } else if (completeData?.results && Array.isArray(completeData.results)) {
-        const byKey = new Map<string, any>(completeData.results.map((r: any) => [String(r.key), r]))
-        for (const r of results) {
-          if (!r.key) continue
-          const mapped = byKey.get(r.key)
-          if (mapped?.success && mapped.url) {
-            r.url = mapped.url
-            onFileProgress?.({ fileName: r.fileName, phase: 'complete', status: 'success', progress: 100 })
-          } else if (mapped && !mapped.success) {
-            r.success = false
-            r.error = mapped.error || '上传完成登记失败'
-            onFileProgress?.({ fileName: r.fileName, phase: 'complete', status: 'error', progress: 0, error: r.error })
-          }
-        }
-      }
-    }
 
     const success = results.filter((r) => r.success).length
     const failed = results.length - success
@@ -249,7 +246,7 @@ export async function listImages(brand?: string): Promise<ListImagesResponse> {
     if (brand && brand !== '全部') {
       body.brand = brand
     }
-    
+
     const token = await getIdTokenOrThrow()
     const response = await fetch(`${API_BASE_URL}/list`, {
       method: 'POST',
