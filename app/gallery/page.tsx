@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import JSZip from 'jszip'
+import { saveAs } from 'file-saver'
 import { 
   ArrowLeft, 
   Search,
@@ -38,6 +40,9 @@ export default function GalleryPage() {
   const [error, setError] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState<string | null>(null)
   const [isBrandDeleting, setIsBrandDeleting] = useState(false)
+  const [isBrandDownloading, setIsBrandDownloading] = useState(false)
+  const [downloadProgress, setDownloadProgress] = useState(0)
+  const [downloadCount, setDownloadCount] = useState<{ done: number; total: number }>({ done: 0, total: 0 })
   const [userinfo, setUserinfo] = useState<CognitoUserInfo | null>(null)
 
   const isAdmin = hasGroup(userinfo, 'Admin') || hasGroup(userinfo, 'SuperAdmin')
@@ -259,6 +264,133 @@ export default function GalleryPage() {
     return out
   }
 
+  const sanitizeZipName = (s: string) => {
+    const x = String(s || '').trim()
+    if (!x) return 'file'
+    // Windows / zip 安全：移除非法字符
+    return x.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim()
+  }
+
+  const fetchArrayBufferWithTimeout = async (url: string, ms: number): Promise<ArrayBuffer> => {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), Math.max(1, ms))
+    try {
+      const res = await fetch(url, { signal: ctrl.signal })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return await res.arrayBuffer()
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  const handleDownloadBrandAllForSuperAdmin = async () => {
+    if (!isSuperAdmin) return
+    if (!selectedBrandKey) {
+      alert('请先选择要下载的品牌')
+      return
+    }
+    if (isBrandDownloading) return
+
+    const [targetUserId, brandId] = selectedBrandKey.split('::')
+    const brand = allBrands.find((b) => `${b.userId}::${b.brandId}` === selectedBrandKey)
+    const brandName = brand?.brandName || 'brand'
+
+    const ok = confirm(`${t.gallery.downloadBrandAll}\n品牌：${brandName}\nBrandId：${brandId}`)
+    if (!ok) return
+
+    setIsBrandDownloading(true)
+    setDownloadProgress(1)
+    setDownloadCount({ done: 0, total: 0 })
+    try {
+      // 1) 拉取该 brandId 的所有分页（每页 60）
+      const all: ImageItem[] = []
+      let cursor: string | null = null
+      let guard = 0
+      while (true) {
+        guard += 1
+        if (guard > 500) break // 防御：避免异常循环
+        const resp = await listImagesForBrandIdPaged({ userId: targetUserId, brandId, limit: 60, cursor })
+        const imgs = Array.isArray(resp.images) ? resp.images : []
+        all.push(...imgs)
+        cursor = resp.nextCursor || null
+        if (!resp.hasMore || !cursor) break
+        // 拉分页阶段占进度 1~10
+        setDownloadProgress(Math.min(10, 1 + Math.round((guard / 20) * 9)))
+      }
+
+      if (all.length === 0) {
+        alert('该品牌暂无图片')
+        return
+      }
+
+      // 2) 下载图片并打包 zip
+      const zip = new JSZip()
+      const folderName = sanitizeZipName(`${brandName}-${brandId}`)
+      const folder = zip.folder(folderName) || zip
+
+      const failed: string[] = []
+      const usedNames = new Map<string, number>()
+      const pickFileName = (img: ImageItem) => {
+        const raw = sanitizeZipName(img.name || img.key.split('/').slice(-1)[0] || 'image')
+        const dot = raw.lastIndexOf('.')
+        const base = dot > 0 ? raw.slice(0, dot) : raw
+        const ext = dot > 0 ? raw.slice(dot) : ''
+        const n = (usedNames.get(raw) || 0) + 1
+        usedNames.set(raw, n)
+        return n === 1 ? `${base}${ext}` : `${base} (${n})${ext}`
+      }
+
+      const total = all.length
+      let done = 0
+      const concurrency = 3
+      setDownloadCount({ done: 0, total })
+      for (const batch of chunk(all, concurrency)) {
+        await Promise.all(
+          batch.map(async (img) => {
+            try {
+              // 防止某个 signedUrl 的 fetch 永久卡住：单张图 60s 超时，失败写入 _failed.txt
+              const buf = await fetchArrayBufferWithTimeout(img.url, 60_000)
+              folder.file(pickFileName(img), buf)
+            } catch (e) {
+              failed.push(`${img.key} - ${(e instanceof Error ? e.message : String(e))}`)
+            } finally {
+              done += 1
+              setDownloadCount({ done, total })
+              // 下载阶段占进度 10~90
+              const p = 10 + Math.round((done / total) * 80)
+              setDownloadProgress(Math.min(90, Math.max(10, p)))
+            }
+          })
+        )
+      }
+
+      if (failed.length > 0) {
+        folder.file('_failed.txt', failed.join('\n'))
+      }
+
+      setDownloadProgress(92)
+      const blob = await zip.generateAsync(
+        { type: 'blob' },
+        (meta) => {
+          // 压缩阶段占进度 92~99
+          const p = 92 + Math.round((meta.percent / 100) * 7)
+          setDownloadProgress(Math.min(99, Math.max(92, p)))
+        }
+      )
+
+      const zipFileName = sanitizeZipName(`${brandName}-${brandId}.zip`)
+      saveAs(blob, zipFileName)
+      setDownloadProgress(100)
+    } catch (e) {
+      console.error('Failed to download brand images:', e)
+      alert(`${t.gallery.downloadFailed}：${e instanceof Error ? e.message : t.common.error}`)
+    } finally {
+      setIsBrandDownloading(false)
+      setTimeout(() => setDownloadProgress(0), 800)
+      setTimeout(() => setDownloadCount({ done: 0, total: 0 }), 800)
+    }
+  }
+
   const handleDeleteBrand = async () => {
     if (!isAdmin) {
       alert('权限不足（需要 Admin）')
@@ -422,6 +554,32 @@ export default function GalleryPage() {
                     <>
                       <Trash2 className="w-4 h-4 mr-2" />
                       <span>{t.gallery.deleteBrandAll}</span>
+                    </>
+                  )}
+                </button>
+              )}
+
+              {/* SuperAdmin：一键下载选中品牌全部图片（ZIP） */}
+              {isSuperAdmin && !!selectedBrandKey && (
+                <button
+                  onClick={handleDownloadBrandAllForSuperAdmin}
+                  disabled={isLoading || isBrandDownloading}
+                  className="inline-flex items-center justify-center px-4 py-2.5 bg-white border-2 border-slate-200 text-slate-800 rounded-lg hover:bg-slate-50 hover:border-primary-300 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={t.gallery.downloadBrandAll}
+                >
+                  {isBrandDownloading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      <span>
+                        {t.gallery.downloadBrandDownloading}{' '}
+                        {downloadProgress ? `${downloadProgress}%` : ''}
+                        {downloadCount.total ? ` (${downloadCount.done}/${downloadCount.total})` : ''}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-4 h-4 mr-2" />
+                      <span>{t.gallery.downloadBrandAll}</span>
                     </>
                   )}
                 </button>

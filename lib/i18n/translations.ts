@@ -135,6 +135,8 @@ export interface Translations {
     deleteBrandDeleting: string
     deleteBrandSuccess: string
     deleteBrandFailed: string
+    downloadBrandAll: string
+    downloadBrandDownloading: string
     downloadFailed: string
     imageInfo: {
       brand: string
@@ -267,6 +269,8 @@ export const translations: Record<Language, Translations> = {
       deleteBrandDeleting: '批量删除中...',
       deleteBrandSuccess: '品牌图片已全部删除',
       deleteBrandFailed: '品牌批量删除失败',
+      downloadBrandAll: '一键下载该品牌全部',
+      downloadBrandDownloading: '打包下载中...',
       downloadFailed: '下载失败，请重试',
       imageInfo: {
         brand: '品牌',
@@ -398,6 +402,8 @@ export const translations: Record<Language, Translations> = {
       deleteBrandDeleting: 'Deleting...',
       deleteBrandSuccess: 'All images under this brand have been deleted',
       deleteBrandFailed: 'Failed to delete brand images',
+      downloadBrandAll: 'Download all in brand',
+      downloadBrandDownloading: 'Downloading...',
       downloadFailed: 'Download failed, please try again',
       imageInfo: {
         brand: 'Brand',
@@ -529,6 +535,8 @@ export const translations: Record<Language, Translations> = {
       deleteBrandDeleting: '削除中...',
       deleteBrandSuccess: 'ブランド内の画像をすべて削除しました',
       deleteBrandFailed: 'ブランドの一括削除に失敗しました',
+      downloadBrandAll: 'このブランドを一括ダウンロード',
+      downloadBrandDownloading: 'ダウンロード中...',
       downloadFailed: 'ダウンロード失敗、再試行してください',
       imageInfo: {
         brand: 'ブランド',
