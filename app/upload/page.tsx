@@ -10,12 +10,11 @@ import {
   CheckCircle,
   AlertCircle,
   ArrowLeft,
-  Package
 } from 'lucide-react'
-import { authCheck, hasGroup } from '@/lib/cognito-auth'
+import { authCheck, hasGroup, type CognitoUserInfo } from '@/lib/cognito-auth'
 import { useEffect } from 'react'
 import { useLanguage } from '@/lib/i18n/LanguageContext'
-import LanguageSwitcher from '@/components/LanguageSwitcher'
+import AppNav from '@/components/AppNav'
 
 interface UploadFile {
   file: File
@@ -33,6 +32,7 @@ export default function UploadPage() {
   const [isDragging, setIsDragging] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [isAuthReady, setIsAuthReady] = useState(false)
+  const [userinfo, setUserinfo] = useState<CognitoUserInfo | null>(null)
 
   useEffect(() => {
     ; (async () => {
@@ -41,11 +41,13 @@ export default function UploadPage() {
         router.push('/login')
         return
       }
-      // 只有 Admin 可以上传
-      if (!hasGroup(userinfo, 'Admin')) {
+      // 允许 Admin / SuperAdmin 上传
+      const ok = hasGroup(userinfo, 'Admin') || hasGroup(userinfo, 'SuperAdmin')
+      if (!ok) {
         router.push('/gallery')
         return
       }
+      setUserinfo(userinfo)
       setIsAuthReady(true)
     })()
   }, [router])
@@ -238,29 +240,18 @@ export default function UploadPage() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* 导航栏 */}
-      <nav className="bg-white shadow-sm border-b border-slate-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center space-x-3">
-              <Package className="w-8 h-8 text-primary-600" />
-              <h1 className="text-2xl font-bold text-slate-900">
-                {t.common.appName}
-              </h1>
-            </div>
-            <div className="flex items-center space-x-4">
-              <LanguageSwitcher />
-              <Link
-                href="/"
-                className="flex items-center space-x-2 text-slate-600 hover:text-slate-900 transition-colors"
-              >
-                <ArrowLeft className="w-5 h-5" />
-                <span>{t.common.back}</span>
-              </Link>
-            </div>
-          </div>
-        </div>
-      </nav>
+      <AppNav
+        userinfo={userinfo}
+        rightExtra={
+          <Link
+            href="/"
+            className="hidden sm:inline-flex items-center gap-2 text-slate-600 hover:text-slate-900 transition-colors px-2 py-2 rounded-lg hover:bg-slate-50"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span className="text-sm">{t.common.back}</span>
+          </Link>
+        }
+      />
 
       {/* 主内容 */}
       <main className="flex-1 p-8">

@@ -5,11 +5,11 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 
-const AWS_API_URL = process.env.TRYON_AWS_API_URL || ''
-const AWS_API_KEY = process.env.TRYON_AWS_API_KEY || ''
-
 export async function POST(request: NextRequest) {
   try {
+    const AWS_API_URL = process.env.TRYON_AWS_API_URL || ''
+    const AWS_API_KEY = process.env.TRYON_AWS_API_KEY || ''
+
     if (!AWS_API_URL || !AWS_API_KEY) {
       console.error('[Delete] Missing env vars:', {
         hasUrl: !!process.env.TRYON_AWS_API_URL,

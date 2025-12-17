@@ -44,7 +44,8 @@ export const handler = async (event) => {
         body: JSON.stringify({ error: 'Unauthorized' }),
       }
     }
-    const ok = auth.groups?.includes('Admin') || auth.groups?.includes('ViewData')
+    const isSuperAdmin = auth.groups?.includes('SuperAdmin')
+    const ok = auth.groups?.includes('Admin') || auth.groups?.includes('ViewData') || isSuperAdmin
     if (!ok) {
       return {
         statusCode: 403,
@@ -63,10 +64,18 @@ export const handler = async (event) => {
       }
     }
     
-    const brand = body.brand;
-    // 按用户隔离：只允许列出当前 userId 前缀下的对象
-    const safeUserId = sanitizeForUrl(auth.userId)
-    const prefix = brand ? `${safeUserId}/${sanitizeForUrl(brand)}/` : `${safeUserId}/`;
+    const brand = String(body.brand || '').trim(); // 兼容：brandName 过滤（旧前端）
+    const brandId = String(body.brandId || '').trim(); // 推荐：brandId 精确过滤
+    const targetUserId = String(body.userId || '').trim(); // SuperAdmin 可指定查看哪个 userId
+    const limit = Math.max(1, Math.min(200, Number(body.limit || 60))) // 默认 60
+    const cursor = body.cursor ? String(body.cursor) : null // S3 ContinuationToken
+
+    // 重要：图片 Key 格式是 userId/brandId/filename
+    // - 普通用户：只允许看自己 auth.userId
+    // - SuperAdmin：允许传入 targetUserId + brandId 来精确列出该品牌目录
+    const effectiveUserId = isSuperAdmin && targetUserId ? targetUserId : auth.userId
+    const safeUserId = sanitizeForUrl(effectiveUserId)
+    const prefix = brandId ? `${safeUserId}/${sanitizeForUrl(brandId)}/` : `${safeUserId}/`;
 
     console.log(`[PFTryonGetListTool] 请求参数 - 品牌筛选: ${brand || '全部'}`);
     console.log(`[PFTryonGetListTool] S3 前缀: ${prefix || '(根目录)'}`);
@@ -76,7 +85,8 @@ export const handler = async (event) => {
     const listCommand = new ListObjectsV2Command({
       Bucket: BUCKET_NAME,
       Prefix: prefix,
-      MaxKeys: 1000
+      MaxKeys: limit,
+      ...(cursor ? { ContinuationToken: cursor } : {})
     });
 
     const s3Data = await s3Client.send(listCommand);
@@ -101,16 +111,21 @@ export const handler = async (event) => {
 
         const metadata = await s3Client.send(headCommand);
 
-        // 解析品牌名称（从路径中提取）
-        // Key 格式：userId/brand/filename
+        // Key 格式：userId/brandId/filename 或 userId/brandId/config/filename
         const pathParts = object.Key.split('/');
         const objectUserId = pathParts[0] || '';
-        const objectBrand = pathParts[1] || '';
+        const objectBrandId = pathParts[1] || '';
+        const objectFolder = pathParts[2] || '';
         const fileName = pathParts[pathParts.length - 1];
 
-        // 二次校验：只处理当前用户自己的对象（防止前缀/配置异常导致越权）
+        // 二次校验：只处理目标 userId 前缀（防止前缀/配置异常导致越权）
         if (objectUserId !== safeUserId) {
           console.warn(`[PFTryonGetListTool] 跳过非本用户对象: ${object.Key}`)
+          continue
+        }
+
+        // gallery 只展示图片，过滤掉配置文件目录
+        if (objectFolder === 'config') {
           continue
         }
 
@@ -131,21 +146,30 @@ export const handler = async (event) => {
         try {
           decodedBrand = metadata.Metadata?.brand 
             ? decodeBase64Metadata(metadata.Metadata.brand) 
-            : safeDecodeURIComponent(objectBrand);
+            : safeDecodeURIComponent(objectBrandId);
         } catch (error) {
           console.warn(`[PFTryonGetListTool] 品牌名解码失败: ${error.message}, 使用原始值`);
-          decodedBrand = objectBrand;
+          decodedBrand = objectBrandId;
         }
         
         const decodedFileName = metadata.Metadata?.originalname 
           ? decodeBase64Metadata(metadata.Metadata.originalname) 
           : fileName;
 
+        // 过滤：brandId（优先）或 brandName
+        if (brandId && objectBrandId !== sanitizeForUrl(brandId)) {
+          continue
+        }
+        if (brand && decodedBrand !== brand) {
+          continue
+        }
+
         images.push({
           // 使用 Key 保证唯一性（ETag 可能重复，导致前端 key 冲突）
           id: object.Key,
           name: decodedFileName,
           brand: decodedBrand,
+          brandId: objectBrandId,
           url: signedUrl,
           key: object.Key,
           size: object.Size,
@@ -178,6 +202,8 @@ export const handler = async (event) => {
         images,
         total: images.length,
         brand: brand || '全部',
+        nextCursor: s3Data?.NextContinuationToken || null,
+        hasMore: !!s3Data?.IsTruncated,
         note: `图片 URL 为临时访问链接，有效期约 ${Math.round(SIGNED_URL_EXPIRATION / 3600)} 小时`
       })
     };

@@ -5,18 +5,16 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 
-const AWS_API_URL = process.env.TRYON_AWS_API_URL || ''
-const AWS_API_KEY = process.env.TRYON_AWS_API_KEY || ''
-
 export async function POST(request: NextRequest) {
   try {
-    // 调试：检查环境变量（仅在开发环境或出错时）
+    // 注意：一定要在运行时读取 env（Amplify/Next 构建期可能会把模块顶层的 process.env 固化为空）
+    const AWS_API_URL = process.env.TRYON_AWS_API_URL || ''
+    const AWS_API_KEY = process.env.TRYON_AWS_API_KEY || ''
+
     if (!AWS_API_URL || !AWS_API_KEY) {
       console.error('[Upload Prepare] Missing env vars:', {
         hasUrl: !!process.env.TRYON_AWS_API_URL,
         hasKey: !!process.env.TRYON_AWS_API_KEY,
-        urlValue: process.env.TRYON_AWS_API_URL ? '***' : undefined,
-        allEnvKeys: Object.keys(process.env).filter(k => k.includes('TRYON') || k.includes('AWS_API')),
       })
       return NextResponse.json({ error: '服务器未配置 TRYON_AWS_API_URL / TRYON_AWS_API_KEY' }, { status: 500 })
     }

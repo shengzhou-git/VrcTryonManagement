@@ -109,6 +109,26 @@ export type UploadImagesOptions = {
   concurrency?: number
 }
 
+export type UploadJsonOptions = {
+  onProgress?: (p: number) => void
+}
+
+type ConfigPrepareResponse = {
+  success: boolean
+  key?: string
+  uploadUrl?: string
+  method?: 'PUT'
+  error?: string
+}
+
+type ConfigCompleteResponse = {
+  success: boolean
+  key?: string
+  url?: string
+  expiresIn?: number
+  error?: string
+}
+
 function putToS3WithProgress(url: string, file: File, onProgress?: (p: number) => void): Promise<{ ok: boolean; status: number }> {
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest()
@@ -140,6 +160,7 @@ export interface ImageItem {
   id: string
   name: string
   brand: string
+  brandId?: string
   url: string
   key: string
   size: number
@@ -290,6 +311,96 @@ export async function uploadImages(
 }
 
 /**
+ * 上传品牌配置 JSON（仅 SuperAdmin）
+ * 流程：/api/config/prepare -> PUT 到 S3 -> /api/config/complete
+ */
+export type BrandItem = {
+  userId: string
+  brandId: string
+  brandName: string
+  createdAt?: string | null
+  updatedAt?: string | null
+  uploadCount?: number
+}
+
+export async function listAllBrandsForSuperAdmin(): Promise<BrandItem[]> {
+  const token = await getIdTokenOrThrow()
+  const resp = await fetch(`${API_BASE_URL}/brand/list`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({}),
+  })
+  const data = (await resp.json().catch(() => null)) as any
+  if (!resp.ok) throw new Error(data?.error || '获取品牌列表失败')
+  const items = Array.isArray(data?.items) ? data.items : []
+  return items as BrandItem[]
+}
+
+/**
+ * 上传品牌配置 JSON（仅 SuperAdmin）
+ * 路径：{userId}/{brandId}/config/<filename>.json
+ */
+export async function uploadBrandConfigJson(
+  target: { brandId: string },
+  file: File,
+  options: UploadJsonOptions = {}
+): Promise<{ key: string; url?: string }> {
+  const token = await getIdTokenOrThrow()
+
+  // 1) prepare：申请 presigned uploadUrl
+  const prepareResp = await fetch(`${API_BASE_URL}/config/prepare`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      brandId: target.brandId,
+      fileName: file.name,
+      size: file.size,
+      mimeType: file.type || 'application/json',
+    }),
+  })
+
+  const prepareData = (await prepareResp.json().catch(() => null)) as ConfigPrepareResponse | null
+  if (!prepareResp.ok || !prepareData?.success || !prepareData.uploadUrl || !prepareData.key) {
+    throw new Error(prepareData?.error || '配置上传准备失败')
+  }
+
+  // 2) PUT 到 S3（带进度）
+  options.onProgress?.(1)
+  const putRes = await putToS3WithProgress(prepareData.uploadUrl, file, (p) => options.onProgress?.(p))
+  if (!putRes.ok) {
+    throw new Error(`S3 上传失败（${putRes.status}）`)
+  }
+
+  // 3) complete：确认对象存在并返回临时读取链接（可选）
+  const completeResp = await fetchWithRetry(
+    `${API_BASE_URL}/config/complete`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ key: prepareData.key, brandId: target.brandId }),
+    },
+    { retries: 2, baseDelayMs: 500 }
+  )
+
+  const completeData = (await completeResp.json().catch(() => null)) as ConfigCompleteResponse | null
+  if (!completeResp.ok || !completeData?.success || !completeData.key) {
+    throw new Error(completeData?.error || '配置上传完成确认失败')
+  }
+
+  options.onProgress?.(100)
+  return { key: completeData.key, url: completeData.url }
+}
+
+/**
  * 获取图片列表
  */
 export async function listImages(brand?: string): Promise<ListImagesResponse> {
@@ -319,6 +430,47 @@ export async function listImages(brand?: string): Promise<ListImagesResponse> {
     console.error('List error:', error)
     throw error
   }
+}
+
+export async function listImagesForBrandId(target: { userId: string; brandId: string }): Promise<ListImagesResponse> {
+  const token = await getIdTokenOrThrow()
+  const response = await fetch(`${API_BASE_URL}/list`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ userId: target.userId, brandId: target.brandId, limit: 60 }),
+  })
+
+  const data = await response.json().catch(() => null as any)
+  if (!response.ok) {
+    throw new Error((data && data.error) || '获取列表失败')
+  }
+  return data as ListImagesResponse
+}
+
+export async function listImagesForBrandIdPaged(target: { userId: string; brandId: string; limit?: number; cursor?: string | null }): Promise<ListImagesResponse & { nextCursor?: string | null; hasMore?: boolean }> {
+  const token = await getIdTokenOrThrow()
+  const response = await fetch(`${API_BASE_URL}/list`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      userId: target.userId,
+      brandId: target.brandId,
+      limit: target.limit ?? 60,
+      cursor: target.cursor ?? null,
+    }),
+  })
+
+  const data = await response.json().catch(() => null as any)
+  if (!response.ok) {
+    throw new Error((data && data.error) || '获取列表失败')
+  }
+  return data as any
 }
 
 /**

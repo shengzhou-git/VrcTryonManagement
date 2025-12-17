@@ -8,7 +8,7 @@ import {
 import { jwtDecode } from 'jwt-decode'
 import { cognitoConfig } from './config'
 
-export type CognitoGroup = 'Admin' | 'ViewData'
+export type CognitoGroup = 'Admin' | 'ViewData'| 'SuperAdmin'
 
 const AUTH_LOG_ENABLED = process.env.NODE_ENV !== 'production'
 const AUTH_LOG_PREFIX = '[CognitoAuth]'

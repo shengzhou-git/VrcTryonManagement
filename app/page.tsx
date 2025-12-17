@@ -4,26 +4,24 @@ import Link from 'next/link'
 import { Upload, Image as ImageIcon, Package } from 'lucide-react'
 import { useLanguage } from '@/lib/i18n/LanguageContext'
 import LanguageSwitcher from '@/components/LanguageSwitcher'
+import { useEffect, useState } from 'react'
+import AppNav from '@/components/AppNav'
+import { authCheck, type CognitoUserInfo } from '@/lib/cognito-auth'
 
 export default function Home() {
   const { t } = useLanguage()
+  const [userinfo, setUserinfo] = useState<CognitoUserInfo | null>(null)
+
+  useEffect(() => {
+    ;(async () => {
+      const { token, userinfo } = await authCheck()
+      if (token) setUserinfo(userinfo)
+    })()
+  }, [])
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* 导航栏 */}
-      <nav className="bg-white shadow-sm border-b border-slate-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center space-x-3">
-              <Package className="w-8 h-8 text-primary-600" />
-              <h1 className="text-2xl font-bold text-slate-900">
-                {t.common.appName}
-              </h1>
-            </div>
-            <LanguageSwitcher />
-          </div>
-        </div>
-      </nav>
+      <AppNav userinfo={userinfo} />
 
       {/* 主内容 */}
       <main className="flex-1 flex items-center justify-center p-8">

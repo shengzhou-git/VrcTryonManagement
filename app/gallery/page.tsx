@@ -4,7 +4,6 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { 
   ArrowLeft, 
-  Package, 
   Search,
   Filter,
   Download,
@@ -16,16 +15,23 @@ import {
   AlertCircle,
   RefreshCw,
 } from 'lucide-react'
-import { listImages, deleteImages, deleteBrandImages, type ImageItem } from '@/lib/api'
+import { listImages, deleteImages, deleteBrandImages, listAllBrandsForSuperAdmin, listImagesForBrandIdPaged, type ImageItem, type BrandItem } from '@/lib/api'
 import { useLanguage } from '@/lib/i18n/LanguageContext'
-import LanguageSwitcher from '@/components/LanguageSwitcher'
+import AppNav from '@/components/AppNav'
 import { authCheck, hasGroup, type CognitoUserInfo } from '@/lib/cognito-auth'
 import { useRouter } from 'next/navigation'
 
 export default function GalleryPage() {
   const router = useRouter()
   const { t } = useLanguage()
-  const [images, setImages] = useState<ImageItem[]>([])
+  // 普通用户：保存全量图片列表（用于品牌下拉）并在前端过滤
+  const [allImages, setAllImages] = useState<ImageItem[]>([])
+  // SuperAdmin：品牌列表来自 DynamoDB（全局），并按 BrandId 精确拉取该品牌图片
+  const [allBrands, setAllBrands] = useState<BrandItem[]>([])
+  const [selectedBrandKey, setSelectedBrandKey] = useState<string>('') // `${userId}::${brandId}`
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [hasMore, setHasMore] = useState(false)
+  const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedBrand, setSelectedBrand] = useState(t.gallery.allBrands)
   const [isLoading, setIsLoading] = useState(true)
@@ -34,9 +40,16 @@ export default function GalleryPage() {
   const [isBrandDeleting, setIsBrandDeleting] = useState(false)
   const [userinfo, setUserinfo] = useState<CognitoUserInfo | null>(null)
 
-  const isAdmin = hasGroup(userinfo, 'Admin')
+  const isAdmin = hasGroup(userinfo, 'Admin') || hasGroup(userinfo, 'SuperAdmin')
+  const isSuperAdmin = hasGroup(userinfo, 'SuperAdmin')
 
-  // 登录检查 + 权限检查（Admin / ViewData）
+  const toTs = (s?: string | null): number => {
+    if (!s) return 0
+    const n = Date.parse(String(s))
+    return Number.isFinite(n) ? n : 0
+  }
+
+  // 登录检查 + 权限检查（Admin / ViewData / SuperAdmin）
   useEffect(() => {
     ;(async () => {
       const { token, userinfo } = await authCheck()
@@ -44,14 +57,45 @@ export default function GalleryPage() {
         router.push('/login')
         return
       }
-      // 只允许 Admin 或 ViewData
-      const ok = hasGroup(userinfo, 'Admin') || hasGroup(userinfo, 'ViewData')
+      // 只允许 Admin / ViewData / SuperAdmin
+      const ok = hasGroup(userinfo, 'Admin') || hasGroup(userinfo, 'ViewData') || hasGroup(userinfo, 'SuperAdmin')
       if (!ok) {
         router.push('/login')
         return
       }
       setUserinfo(userinfo)
+
+      // SuperAdmin 加载全局品牌列表（用于下拉）
+      if (hasGroup(userinfo, 'SuperAdmin')) {
+        try {
+          setIsLoading(true)
+          const list = await listAllBrandsForSuperAdmin()
+          setAllBrands(list)
+
+          // 默认选择“最新品牌”（UpdatedAt 优先，其次 CreatedAt）
+          if (!selectedBrandKey && list.length > 0) {
+            const latest = [...list].sort((a, b) => {
+              const at = toTs(a.updatedAt) || toTs(a.createdAt)
+              const bt = toTs(b.updatedAt) || toTs(b.createdAt)
+              if (bt !== at) return bt - at
+              return Number(b.uploadCount || 0) - Number(a.uploadCount || 0)
+            })[0]
+            if (latest?.userId && latest?.brandId) {
+              setSelectedBrandKey(`${latest.userId}::${latest.brandId}`)
+            }
+          }
+        } catch (e) {
+          console.error('Failed to load all brands:', e)
+          setError(e instanceof Error ? e.message : t.gallery.loadFailed)
+        } finally {
+          // 注意：SuperAdmin 的图片加载由 selectedBrandKey 驱动；这里不要卡在 loading
+          setIsLoading(false)
+        }
+      } else {
+        setIsLoading(false)
+      }
     })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router])
 
   // 语言切换时，保证“全部”选项的值一致
@@ -65,18 +109,71 @@ export default function GalleryPage() {
 
   // 加载图片列表
   useEffect(() => {
+    if (!userinfo) return
+    if (isSuperAdmin) return // SuperAdmin 由选中品牌驱动
     loadImages()
-  }, [selectedBrand])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userinfo, isSuperAdmin])
+
+  // SuperAdmin：选中品牌后再拉取对应图片
+  useEffect(() => {
+    if (!userinfo) return
+    if (!isSuperAdmin) return
+    if (!selectedBrandKey) {
+      setAllImages([])
+      setNextCursor(null)
+      setHasMore(false)
+      return
+    }
+    ;(async () => {
+      try {
+        setIsLoading(true)
+        setError(null)
+        const [userId, brandId] = selectedBrandKey.split('::')
+        const resp = await listImagesForBrandIdPaged({ userId, brandId, limit: 60, cursor: null })
+        setAllImages(resp.images || [])
+        setNextCursor(resp.nextCursor || null)
+        setHasMore(!!resp.hasMore)
+      } catch (e) {
+        console.error('Failed to load images for brandId:', e)
+        setError(e instanceof Error ? e.message : t.gallery.loadFailed)
+      } finally {
+        setIsLoading(false)
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userinfo, isSuperAdmin, selectedBrandKey])
+
+  const loadMore = async () => {
+    if (!isSuperAdmin) return
+    if (!selectedBrandKey) return
+    if (!hasMore || !nextCursor) return
+    if (isLoadingMore) return
+
+    setIsLoadingMore(true)
+    try {
+      const [userId, brandId] = selectedBrandKey.split('::')
+      const resp = await listImagesForBrandIdPaged({ userId, brandId, limit: 60, cursor: nextCursor })
+      const more = resp.images || []
+      setAllImages((prev) => [...prev, ...more])
+      setNextCursor(resp.nextCursor || null)
+      setHasMore(!!resp.hasMore)
+    } catch (e) {
+      console.error('Failed to load more images:', e)
+      alert(e instanceof Error ? e.message : t.common.error)
+    } finally {
+      setIsLoadingMore(false)
+    }
+  }
 
   const loadImages = async () => {
     try {
       setIsLoading(true)
       setError(null)
-      
-      const brand = selectedBrand === t.gallery.allBrands ? undefined : selectedBrand
-      const response = await listImages(brand)
-      
-      setImages(response.images)
+
+      // 关键：始终拉取“全量”，避免品牌切换后 brands 选项只剩当前品牌
+      const response = await listImages(undefined)
+      setAllImages(response.images)
     } catch (err) {
       console.error('Failed to load images:', err)
       setError(err instanceof Error ? err.message : t.gallery.loadFailed)
@@ -100,7 +197,7 @@ export default function GalleryPage() {
       await deleteImages([image.key])
       
       // 从列表中移除
-      setImages(prev => prev.filter(img => img.id !== image.id))
+      setAllImages(prev => prev.filter(img => img.id !== image.id))
       
       alert(t.gallery.deleteSuccess)
     } catch (err) {
@@ -131,22 +228,30 @@ export default function GalleryPage() {
   }
 
   // 获取所有品牌
-  const brands = [t.gallery.allBrands, ...Array.from(new Set(images.map(img => img.brand)))]
+  const brands = isSuperAdmin
+    ? [t.gallery.allBrands] // SuperAdmin 下拉用 allBrands 渲染
+    : [
+        t.gallery.allBrands,
+        ...Array.from(new Set(allImages.map((img) => img.brand))).sort((a, b) => a.localeCompare(b)),
+      ]
 
   // 过滤图片
-  const filteredImages = images.filter(img => {
+  const filteredImages = allImages.filter(img => {
     const matchesSearch = img.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          img.brand.toLowerCase().includes(searchTerm.toLowerCase())
     const matchesBrand = selectedBrand === t.gallery.allBrands || img.brand === selectedBrand
     return matchesSearch && matchesBrand
   })
 
+  const selectedBrandCount =
+    selectedBrand === t.gallery.allBrands ? allImages.length : allImages.filter((img) => img.brand === selectedBrand).length
+
   const canBulkDeleteBrand =
     isAdmin &&
     !isLoading &&
     !isBrandDeleting &&
     selectedBrand !== t.gallery.allBrands &&
-    images.length > 0
+    selectedBrandCount > 0
 
   const chunk = <T,>(arr: T[], size: number): T[][] => {
     const out: T[][] = []
@@ -163,22 +268,22 @@ export default function GalleryPage() {
       alert('请先选择要删除的品牌')
       return
     }
-    if (images.length === 0) {
+    if (selectedBrandCount === 0) {
       alert('该品牌暂无图片')
       return
     }
-    const ok = confirm(`${t.gallery.deleteBrandConfirm}\n品牌：${selectedBrand}\n数量：${images.length}`)
+    const ok = confirm(`${t.gallery.deleteBrandConfirm}\n品牌：${selectedBrand}\n数量：${selectedBrandCount}`)
     if (!ok) return
 
     try {
       setIsBrandDeleting(true)
       await deleteBrandImages(selectedBrand)
-      // 删除完成后，当前 selectedBrand 可能已不存在于下拉 options 中（因为 brands 是从 images 推导的），
-      // 会导致 UI 看起来回到“全部”但 state 仍是旧品牌，从而不会触发重新加载。
-      // 这里显式切回“全部”，触发 useEffect 重新拉取全量列表并恢复下拉可选项。
-      setImages([])
+      // 先本地移除该品牌，立即反馈；再切回“全部”
+      setAllImages((prev) => prev.filter((img) => img.brand !== selectedBrand))
       setSelectedBrand(t.gallery.allBrands)
       alert(t.gallery.deleteBrandSuccess)
+      // 保险起见再拉一次全量（避免 S3 列表存在延迟导致 UI 与实际不一致）
+      loadImages()
     } catch (err) {
       console.error('Failed to delete brand images:', err)
       alert(`${t.gallery.deleteBrandFailed}：${err instanceof Error ? err.message : t.common.error}`)
@@ -210,43 +315,18 @@ export default function GalleryPage() {
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
-      {/* 导航栏 */}
-      <nav className="bg-white shadow-sm border-b border-slate-200 sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center space-x-3">
-              <Package className="w-8 h-8 text-primary-600" />
-              <h1 className="text-2xl font-bold text-slate-900">
-                {t.common.appName}
-              </h1>
-            </div>
-            <div className="flex items-center space-x-4">
-              <LanguageSwitcher />
-              {isAdmin && (
-                <Link
-                  href="/upload"
-                  className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors font-medium"
-                >
-                  {t.common.upload}
-                </Link>
-              )}
-              <Link 
-                href="/"
-                className="flex items-center space-x-2 text-slate-600 hover:text-slate-900 transition-colors"
-              >
-                <ArrowLeft className="w-5 h-5" />
-                <span>{t.common.back}</span>
-              </Link>
-              <Link
-                href="/account"
-                className="px-3 py-2 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-700 text-sm"
-              >
-                Account
-              </Link>
-            </div>
-          </div>
-        </div>
-      </nav>
+      <AppNav
+        userinfo={userinfo}
+        rightExtra={
+          <Link
+            href="/"
+            className="hidden sm:inline-flex items-center gap-2 text-slate-600 hover:text-slate-900 transition-colors px-2 py-2 rounded-lg hover:bg-slate-50"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span className="text-sm">{t.common.back}</span>
+          </Link>
+        }
+      />
 
       {/* 主内容 */}
       <main className="flex-1 p-6">
@@ -293,16 +373,32 @@ export default function GalleryPage() {
               {/* 品牌筛选 */}
               <div className="flex items-center space-x-2">
                 <Filter className="w-5 h-5 text-slate-500" />
-                <select
-                  value={selectedBrand}
-                  onChange={(e) => setSelectedBrand(e.target.value)}
-                  className="px-4 py-2.5 border-2 border-slate-200 rounded-lg focus:border-primary-500 focus:ring-2 focus:ring-primary-200 outline-none transition-all text-slate-900 bg-white"
-                  disabled={isLoading}
-                >
-                  {brands.map(brand => (
-                    <option key={brand} value={brand}>{brand}</option>
-                  ))}
-                </select>
+                {isSuperAdmin ? (
+                  <select
+                    value={selectedBrandKey}
+                    onChange={(e) => setSelectedBrandKey(e.target.value)}
+                    className="px-4 py-2.5 border-2 border-slate-200 rounded-lg focus:border-primary-500 focus:ring-2 focus:ring-primary-200 outline-none transition-all text-slate-900 bg-white"
+                    disabled={isLoading}
+                  >
+                    <option value="">请选择品牌…</option>
+                    {allBrands.map((b) => (
+                      <option key={`${b.userId}::${b.brandId}`} value={`${b.userId}::${b.brandId}`}>
+                        {b.brandName} ({b.brandId})
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select
+                    value={selectedBrand}
+                    onChange={(e) => setSelectedBrand(e.target.value)}
+                    className="px-4 py-2.5 border-2 border-slate-200 rounded-lg focus:border-primary-500 focus:ring-2 focus:ring-primary-200 outline-none transition-all text-slate-900 bg-white"
+                    disabled={isLoading}
+                  >
+                    {brands.map(brand => (
+                      <option key={brand} value={brand}>{brand}</option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               {/* 品牌一键删除（仅 Admin + 选择了具体品牌） */}
@@ -356,8 +452,9 @@ export default function GalleryPage() {
 
           {/* 图片网格 */}
           {!isLoading && !error && filteredImages.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 animate-scale-in">
-              {filteredImages.map((image) => (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 animate-scale-in">
+                {filteredImages.map((image) => (
                 <div
                   key={image.key}
                   className="image-card bg-white rounded-xl shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden group cursor-pointer border-2 border-transparent hover:border-primary-200"
@@ -423,8 +520,29 @@ export default function GalleryPage() {
                     </div>
                   </div>
                 </div>
-              ))}
-            </div>
+                ))}
+              </div>
+
+              {/* SuperAdmin 分页：加载更多 */}
+              {isSuperAdmin && hasMore && (
+                <div className="mt-8 flex justify-center">
+                  <button
+                    onClick={loadMore}
+                    disabled={isLoadingMore}
+                    className="inline-flex items-center justify-center px-6 py-3 rounded-xl bg-white border-2 border-slate-200 text-slate-800 hover:bg-slate-50 hover:border-primary-300 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isLoadingMore ? (
+                      <>
+                        <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                        <span>加载中…</span>
+                      </>
+                    ) : (
+                      <span>加载更多</span>
+                    )}
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
           {/* 空状态 */}
@@ -434,10 +552,10 @@ export default function GalleryPage() {
                 <ImageIcon className="w-10 h-10 text-slate-400" />
               </div>
               <h3 className="text-xl font-semibold text-slate-900 mb-2">
-                {images.length === 0 ? t.gallery.noImagesYet : t.gallery.noImages}
+                {allImages.length === 0 ? t.gallery.noImagesYet : t.gallery.noImages}
               </h3>
               <p className="text-slate-600 mb-6">
-                {images.length === 0 
+                {allImages.length === 0 
                   ? t.gallery.noImagesYetDesc 
                   : t.gallery.noImagesDesc}
               </p>

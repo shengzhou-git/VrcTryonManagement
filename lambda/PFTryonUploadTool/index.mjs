@@ -4,8 +4,8 @@
  * Node.js 18.x (ES Module)
  */
 
-import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
-import { DynamoDBClient, UpdateItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
+import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, CopyObjectCommand } from '@aws-sdk/client-s3';
+import { DynamoDBClient, UpdateItemCommand, QueryCommand, ScanCommand } from '@aws-sdk/client-dynamodb';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
 
@@ -18,8 +18,6 @@ const BRAND_TABLE_NAME = process.env.BRAND_TABLE_NAME;
 const SIGNED_URL_EXPIRATION = parseInt(process.env.SIGNED_URL_EXPIRATION || '86400'); // 1小时
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-const OUTPUT_WIDTH = 768
-const OUTPUT_HEIGHT = 1024
 
 /**
  * 主处理函数
@@ -49,12 +47,144 @@ export const handler = async (event) => {
     if (!auth.userId) {
       return createErrorResponse(401, 'Unauthorized')
     }
-    if (!auth.groups?.includes('Admin')) {
+    const path = String(event.path || '')
+    const groupsStr = (auth.groups || []).join(',')
+    console.log(`[PFTryonUploadTool] auth ok - requestId=${requestId}, userId=${auth.userId}, groups=${groupsStr}`)
+
+    // 权限策略：
+    // - /config/*：仅 SuperAdmin
+    // - /upload/*：Admin 或 SuperAdmin
+    const isSuperAdmin = Array.isArray(auth.groups) && auth.groups.includes('SuperAdmin')
+    const isAdmin = Array.isArray(auth.groups) && auth.groups.includes('Admin')
+    const isUploadPath = path.includes('/upload')
+    const isConfigPath = path.includes('/config')
+    const isBrandAdminPath = path.includes('/brand/')
+    if (isConfigPath && !isSuperAdmin) {
+      return createErrorResponse(403, 'Forbidden')
+    }
+    if (isBrandAdminPath && !isSuperAdmin) {
+      return createErrorResponse(403, 'Forbidden')
+    }
+    if (isUploadPath && !(isAdmin || isSuperAdmin)) {
       return createErrorResponse(403, 'Forbidden')
     }
 
-    const path = String(event.path || '')
-    console.log(`[PFTryonUploadTool] auth ok - requestId=${requestId}, userId=${auth.userId}, groups=${(auth.groups || []).join(',')}`)
+    // /brand/listAll: SuperAdmin 获取全局品牌列表（来自 DynamoDB 表）
+    if (path.endsWith('/brand/listAll')) {
+      const t0 = Date.now()
+      if (!BRAND_TABLE_NAME) return createErrorResponse(500, 'BRAND_TABLE_NAME 未配置')
+
+      const items = []
+      const seen = new Set()
+      let lastKey = undefined
+      let scanned = 0
+      // 简单分页扫描，避免一次性太大（SuperAdmin 专用）
+      for (let page = 0; page < 20; page++) {
+        const resp = await ddbClient.send(
+          new ScanCommand({
+            TableName: BRAND_TABLE_NAME,
+            ProjectionExpression: 'UserId, BrandId, BrandName, CreatedAt, UpdatedAt, UploadCount',
+            ExclusiveStartKey: lastKey,
+            Limit: 500,
+          })
+        )
+        const arr = resp?.Items || []
+        scanned += arr.length
+        for (const it of arr) {
+          const userId = it?.UserId?.S || ''
+          const brandId = it?.BrandId?.S || ''
+          const brandName = it?.BrandName?.S || ''
+          if (!userId || !brandId || !brandName) continue
+          const k = `${userId}::${brandId}`
+          if (seen.has(k)) continue
+          seen.add(k)
+          items.push({
+            userId,
+            brandId,
+            brandName,
+            createdAt: it?.CreatedAt?.S || null,
+            updatedAt: it?.UpdatedAt?.S || null,
+            uploadCount: Number(it?.UploadCount?.N || 0),
+          })
+        }
+        lastKey = resp?.LastEvaluatedKey
+        if (!lastKey) break
+      }
+
+      items.sort((a, b) => String(a.brandName).localeCompare(String(b.brandName)))
+      console.log(`[PFTryonUploadTool] brand listAll done - requestId=${requestId}, userId=${auth.userId}, count=${items.length}, scanned=${scanned}, ms=${Date.now() - t0}`)
+      return {
+        statusCode: 200,
+        headers: getCorsHeaders(),
+        body: JSON.stringify({ success: true, items }),
+      }
+    }
+
+    // /config/prepare: 生成 JSON 配置的 presigned PUT URL（SuperAdmin 专用）
+    if (path.endsWith('/config/prepare')) {
+      const t0 = Date.now()
+      const body = safeJsonParse(event.body) || {}
+      const fileName = String(body?.fileName || 'config.json')
+      const size = Number(body?.size || 0)
+      const mimeType = String(body?.mimeType || 'application/json').toLowerCase()
+
+      const brandId = String(body?.brandId || '').trim()
+      if (!brandId) return createErrorResponse(400, 'brandId 不能为空')
+      if (!Number.isFinite(size) || size <= 0) return createErrorResponse(400, '文件大小不合法')
+      if (size > 2 * 1024 * 1024) return createErrorResponse(400, '文件过大（最大 2MB）')
+
+      const lower = fileName.toLowerCase()
+      if (!lower.endsWith('.json') || (mimeType && mimeType !== 'application/json' &&   mimeType !== 'text/json')) {
+        return createErrorResponse(400, '仅支持 JSON 文件')
+      }
+
+      const safeBrandId = sanitizeForUrl(brandId)
+      const safeFileName = replaceFileExtToJson(sanitizeFileName(fileName))
+      // SuperAdmin 管理配置：不需要 userId 前缀，直接按 brandId 归档
+      const key = `${safeBrandId}/config/${safeFileName}`
+
+      const putCmd = new PutObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: key,
+      })
+      const uploadUrl = await getSignedUrl(s3Client, putCmd, { expiresIn: 900 })
+
+      console.log(`[PFTryonUploadTool] config prepare done - requestId=${requestId}, userId=${auth.userId}, brandId=${brandId}, key=${key}, ms=${Date.now() - t0}`)
+      return {
+        statusCode: 200,
+        headers: getCorsHeaders(),
+        body: JSON.stringify({ success: true, key, uploadUrl, method: 'PUT' }),
+      }
+    }
+
+    // /config/complete: 校验对象存在 + 返回预签名 GET URL（SuperAdmin 专用）
+    if (path.endsWith('/config/complete')) {
+      const t0 = Date.now()
+      const body = safeJsonParse(event.body) || {}
+      const key = String(body?.key || '')
+
+      const brandId = String(body?.brandId || '').trim()
+      if (!key) return createErrorResponse(400, 'key 不能为空')
+      if (!brandId) return createErrorResponse(400, 'brandId 不能为空')
+      // 安全校验：必须在 {brandId}/config/ 下（避免 SuperAdmin 任意写桶内其他位置）
+      const requiredPrefix = `${sanitizeForUrl(brandId)}/config/`
+      if (!key.startsWith(requiredPrefix)) return createErrorResponse(403, 'Forbidden')
+
+      try {
+        await s3Client.send(new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: key }))
+        const getCmd = new GetObjectCommand({ Bucket: BUCKET_NAME, Key: key })
+        const url = await getSignedUrl(s3Client, getCmd, { expiresIn: SIGNED_URL_EXPIRATION })
+        console.log(`[PFTryonUploadTool] config complete done - requestId=${requestId}, userId=${auth.userId}, key=${key}, ms=${Date.now() - t0}`)
+        return {
+          statusCode: 200,
+          headers: getCorsHeaders(),
+          body: JSON.stringify({ success: true, key, url, expiresIn: SIGNED_URL_EXPIRATION }),
+        }
+      } catch (e) {
+        console.error(`[PFTryonUploadTool] config complete error - requestId=${requestId}, userId=${auth.userId}, key=${key}, error=${e?.message || e}`)
+        return createErrorResponse(500, '配置上传确认失败', e?.message || String(e))
+      }
+    }
 
     // /upload/prepare: 生成 presigned PUT URL（前端直传 S3）
     if (path.endsWith('/upload/prepare')) {
@@ -98,11 +228,11 @@ export const handler = async (event) => {
           continue
         }
 
-        const timestamp = Date.now()
+
         const safeFileName = sanitizeFileName(name)
         const jpgFileName = replaceFileExtToJpg(safeFileName)
         // 使用 brandId 而不是 brandName 构建 S3 key
-        const key = `${safeUserId}/${brandId}/${timestamp}-${jpgFileName}`
+        const key = `${safeUserId}/${brandId}/${jpgFileName}`
 
         // 预签名 PUT：允许前端直接上传二进制
         // 注意：浏览器端 PUT 时如果携带了额外 headers，可能导致与签名不匹配而 403
@@ -188,86 +318,15 @@ export const handler = async (event) => {
         try {
           // 确认对象存在 + 获取元信息
           const head = await s3Client.send(new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: key }))
-
-          // 下载原图
-          const obj = await s3Client.send(new GetObjectCommand({ Bucket: BUCKET_NAME, Key: key }))
-          const inputBuffer = await streamToBuffer(obj?.Body)
-
-          // 等比缩放 + 居中裁剪到固定尺寸（不拉伸变形）
-          // cover：保持纵横比，必要时裁剪
+          // 不再在 Lambda 内做图片解码/resize/转码。
+          // 这里仅做对象存在校验，并通过 CopyObject 方式“替换写入 metadata / content-type”，不改动对象内容。
           // 优先使用前端上报的 mimeType（避免 PUT 未携带 Content-Type 导致 HeadObject 变成 application/octet-stream）
           const reported = String(mimeByKey.get(key) || '').toLowerCase()
           const headCt = String(head?.ContentType || '').toLowerCase()
           const ct = normalizeMimeType(reported || headCt)
-          console.log(
-            `[PFTryonUploadTool] complete image content-type - key=${key}, reported=${reported}, headCt=${headCt}, normalized=${ct}`
-          )
           if (ct && !ALLOWED_MIME_TYPES.includes(ct) && ct !== 'application/octet-stream') {
             throw new Error(`不支持的文件类型: ${ct}`)
           }
-
-          const { Jimp, StandardJimp, MIME_JPEG, hasWebPPlugin } = await getJimpModule()
-          let original
-          try {
-            const isWebp = ct === 'image/webp'
-
-            if (isWebp) {
-              console.log(`[PFTryonUploadTool] Processing WebP image - key=${key}, hasWebPPlugin=${hasWebPPlugin}`)
-
-              if (hasWebPPlugin) {
-                // 使用 Jimp WebP 插件解码
-                try {
-                  original = await Jimp.read(inputBuffer)
-                  console.log(`[PFTryonUploadTool] WebP decoded successfully using Jimp WebP plugin - key=${key}`)
-                } catch (pluginError) {
-                  console.warn(`[PFTryonUploadTool] Jimp WebP plugin failed, trying @jsquash/webp fallback - key=${key}, error=${pluginError?.message}`)
-                  const fallback = await decodeWebpToJimp(Jimp, inputBuffer)
-                  original = fallback
-                  console.log(`[PFTryonUploadTool] WebP decoded successfully using @jsquash/webp fallback - key=${key}`)
-                }
-              } else {
-                // 没有 WebP 插件，直接使用 @jsquash/webp
-                console.log(`[PFTryonUploadTool] Using @jsquash/webp decoder (no plugin available) - key=${key}`)
-                const fallback = await decodeWebpToJimp(Jimp, inputBuffer)
-                original = fallback
-                console.log(`[PFTryonUploadTool] WebP decoded successfully using @jsquash/webp - key=${key}`)
-              }
-            } else {
-              // 非 WebP：使用标准 Jimp，避免 WebP 插件的副作用（如 fetch failed）
-              original = await StandardJimp.read(inputBuffer)
-            }
-          } catch (e) {
-            console.error(
-              `[PFTryonUploadTool] Image decoding failed - key=${key}, ct=${ct}, size=${inputBuffer?.length || 0} bytes, error=${e?.message || e}`
-            )
-            throw new Error(`图片解码失败 (${ct}): ${e?.message || e}`)
-          }
-
-          // 部分图片有 EXIF 方向信息（主要是手机照片）
-          if (typeof original.exifRotate === 'function') {
-            original.exifRotate()
-          }
-
-          console.log(
-            `[PFTryonUploadTool] before resize - key=${key}, width=${original?.bitmap?.width}, height=${original?.bitmap?.height}`
-          )
-
-          // 等比缩放 + 居中裁剪到固定尺寸（不拉伸）
-          const processed = coverCenter(original, OUTPUT_WIDTH, OUTPUT_HEIGHT)
-
-          console.log(
-            `[PFTryonUploadTool] after resize - key=${key}, width=${processed?.bitmap?.width}, height=${processed?.bitmap?.height}`
-          )
-
-          // 统一输出 JPG：透明背景铺白（PNG）
-          // 使用与 processed 相同的 Jimp 类来创建背景，确保类型兼容
-          // Jimp v1 requires object argument: { width, height, color }
-          const JimpClass = processed.constructor || Jimp
-          const bg = new JimpClass({ width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT, color: 0xffffffff })
-          bg.composite(processed, 0, 0)
-          if (typeof bg.quality === 'function') bg.quality(90)
-
-          const out = await bg.getBuffer(MIME_JPEG)
 
           // 写入 metadata（供 GetListTool 展示） + 覆盖写回同一 key
           const originalName = nameByKey.get(key) || key.split('/').slice(-1)[0] || ''
@@ -279,15 +338,19 @@ export const handler = async (event) => {
             uploaddate: new Date().toISOString(),
           }
 
-          await s3Client.send(
-            new PutObjectCommand({
-              Bucket: BUCKET_NAME,
-              Key: key,
-              Body: out,
-              ContentType: 'image/jpeg',
-              Metadata: meta,
-            })
-          )
+          const copySource = encodeS3CopySource(BUCKET_NAME, key)
+          const copyParams = {
+            Bucket: BUCKET_NAME,
+            Key: key,
+            CopySource: copySource,
+            MetadataDirective: 'REPLACE',
+            Metadata: meta,
+          }
+          // 仅当 content-type 合法且可识别时才显式设置，避免错误覆盖
+          if (ct && ct !== 'application/octet-stream') {
+            copyParams.ContentType = ct
+          }
+          await s3Client.send(new CopyObjectCommand(copyParams))
 
           // 生成预签名 GET
           const getCmd = new GetObjectCommand({ Bucket: BUCKET_NAME, Key: key })
@@ -550,105 +613,6 @@ function safeJsonParse(s) {
   }
 }
 
-async function streamToBuffer(body) {
-  if (!body) return Buffer.alloc(0)
-  if (Buffer.isBuffer(body)) return body
-  if (body instanceof Uint8Array) return Buffer.from(body)
-  if (typeof body === 'string') return Buffer.from(body)
-
-  const chunks = []
-  for await (const chunk of body) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-  }
-  return Buffer.concat(chunks)
-}
-
-let __jimpCache = null
-async function getJimpModule() {
-  if (__jimpCache) return __jimpCache
-
-  try {
-    // 尝试导入 WebP 插件和创建自定义 Jimp 实例
-    const { createJimp } = await import('@jimp/core')
-    const webpModule = await import('@jimp/wasm-webp')
-    const webp = webpModule.default || webpModule // 兼容不同的导出方式
-    const mod = await import('jimp')
-
-    // 获取默认格式和插件
-    const defaultFormats = mod.defaultFormats || []
-    const defaultPlugins = mod.defaultPlugins || []
-
-    // 创建包含 WebP 支持的自定义 Jimp 实例
-    const WebPJimp = createJimp({
-      formats: [...defaultFormats, webp],
-      plugins: defaultPlugins
-    })
-
-    const StandardJimp = mod.Jimp || mod.default || mod
-    const MIME_JPEG = mod.MIME_JPEG || mod.JimpMime?.jpeg || 'image/jpeg'
-
-    console.log('[PFTryonUploadTool] Jimp initialized with WebP plugin support')
-    __jimpCache = { Jimp: WebPJimp, StandardJimp, MIME_JPEG, hasWebPPlugin: true }
-    return __jimpCache
-  } catch (webpError) {
-    // 如果 WebP 插件加载失败，回退到标准 Jimp（不支持 WebP）
-    console.warn('[PFTryonUploadTool] Failed to load WebP plugin, falling back to standard Jimp:', webpError.message)
-
-    const mod = await import('jimp')
-    const Jimp = mod.Jimp || mod.default || mod
-    const MIME_JPEG = mod.MIME_JPEG || mod.JimpMime?.jpeg || 'image/jpeg'
-
-    if (!Jimp || typeof Jimp.read !== 'function') {
-      throw new Error('Jimp_NOT_AVAILABLE')
-    }
-
-    __jimpCache = { Jimp, StandardJimp: Jimp, MIME_JPEG, hasWebPPlugin: false }
-    return __jimpCache
-  }
-}
-
-function coverCenter(img, targetW, targetH) {
-  // 优先使用 cover（如果版本支持）
-  if (typeof img.cover === 'function') {
-    try {
-      // Jimp v1 requires object argument: { w, h }
-      img.cover({ w: targetW, h: targetH })
-      return img
-    } catch (e) {
-      // 如果对象参数失败，尝试旧版参数（兼容性）
-      try {
-        img.cover(targetW, targetH)
-        return img
-      } catch {
-        // fallback below
-      }
-    }
-  }
-
-  const w = img.bitmap?.width || 1
-  const h = img.bitmap?.height || 1
-  const scale = Math.max(targetW / w, targetH / h)
-  const rw = Math.max(targetW, Math.round(w * scale))
-  const rh = Math.max(targetH, Math.round(h * scale))
-
-  // Jimp v1 requires object argument
-  try {
-    img.resize({ w: rw, h: rh })
-  } catch {
-    img.resize(rw, rh)
-  }
-
-  const x = Math.max(0, Math.floor((rw - targetW) / 2))
-  const y = Math.max(0, Math.floor((rh - targetH) / 2))
-
-  try {
-    img.crop({ x, y, w: targetW, h: targetH })
-  } catch {
-    img.crop(x, y, targetW, targetH)
-  }
-
-  return img
-}
 
 function normalizeMimeType(mime) {
   const m = String(mime || '').toLowerCase().trim()
@@ -661,44 +625,12 @@ function normalizeMimeType(mime) {
   return clean
 }
 
-let __webpCache = null
-async function getWebpModule() {
-  if (__webpCache) return __webpCache
-  const mod = await import('@jsquash/webp')
-  const decode = mod.decode || mod.default?.decode || mod.default
-  if (typeof decode !== 'function') {
-    throw new Error('WEBP_DECODE_NOT_AVAILABLE')
-  }
-  __webpCache = { decode }
-  return __webpCache
+function encodeS3CopySource(bucket, key) {
+  // CopySource 需要 URL-encode，但保持 "/" 不被编码
+  const encodedKey = encodeURIComponent(String(key || '')).replace(/%2F/g, '/')
+  return `${bucket}/${encodedKey}`
 }
 
-async function decodeWebpToJimp(Jimp, inputBuffer) {
-  const { decode } = await getWebpModule()
-  // @jsquash/webp 期望 Uint8Array
-  const imgData = await decode(new Uint8Array(inputBuffer))
-  const width = imgData?.width
-  const height = imgData?.height
-  const data = imgData?.data
-  if (!width || !height || !data) {
-    throw new Error('WEBP_DECODE_FAILED')
-  }
-
-  const buf = Buffer.from(data)
-
-  // 兼容 Jimp v1 的构造方式
-  try {
-    return new Jimp({ data: buf, width, height })
-  } catch {
-    return await new Promise((resolve, reject) => {
-      // eslint-disable-next-line new-cap
-      new Jimp({ data: buf, width, height }, (err, image) => {
-        if (err) return reject(err)
-        resolve(image)
-      })
-    })
-  }
-}
 
 /**
  * 将字符串转换为 URL 安全格式
@@ -751,6 +683,13 @@ function replaceFileExtToJpg(fileName) {
   const i = n.lastIndexOf('.')
   const base = i > 0 ? n.slice(0, i) : n
   return `${base}.jpg`
+}
+
+function replaceFileExtToJson(fileName) {
+  const n = String(fileName || '')
+  const i = n.lastIndexOf('.')
+  const base = i > 0 ? n.slice(0, i) : n
+  return `${base}.json`
 }
 
 /**

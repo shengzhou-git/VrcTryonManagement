@@ -141,6 +141,48 @@ Resources:
             Path: /upload/complete
             Method: OPTIONS
             RestApiId: !Ref ApiGateway
+        BrandListAllApi:
+          Type: Api
+          Properties:
+            Path: /brand/listAll
+            Method: POST
+            RestApiId: !Ref ApiGateway
+            Auth:
+              ApiKeyRequired: true
+        BrandListAllOptions:
+          Type: Api
+          Properties:
+            Path: /brand/listAll
+            Method: OPTIONS
+            RestApiId: !Ref ApiGateway
+        ConfigPrepareApi:
+          Type: Api
+          Properties:
+            Path: /config/prepare
+            Method: POST
+            RestApiId: !Ref ApiGateway
+            Auth:
+              ApiKeyRequired: true
+        ConfigPrepareOptions:
+          Type: Api
+          Properties:
+            Path: /config/prepare
+            Method: OPTIONS
+            RestApiId: !Ref ApiGateway
+        ConfigCompleteApi:
+          Type: Api
+          Properties:
+            Path: /config/complete
+            Method: POST
+            RestApiId: !Ref ApiGateway
+            Auth:
+              ApiKeyRequired: true
+        ConfigCompleteOptions:
+          Type: Api
+          Properties:
+            Path: /config/complete
+            Method: OPTIONS
+            RestApiId: !Ref ApiGateway
 
   # Lambda 列表获取函数
   PFTryonGetListTool:

@@ -1,5 +1,5 @@
 /**
- * Next.js API 路由 - 上传图片
+ * Next.js API 路由 - SuperAdmin 获取全局品牌列表（BrandName + BrandId + UserId）
  * 服务器端代理，保护 API Key
  */
 
@@ -11,10 +11,6 @@ export async function POST(request: NextRequest) {
     const AWS_API_KEY = process.env.TRYON_AWS_API_KEY || ''
 
     if (!AWS_API_URL || !AWS_API_KEY) {
-      console.error('[Upload] Missing env vars:', {
-        hasUrl: !!process.env.TRYON_AWS_API_URL,
-        hasKey: !!process.env.TRYON_AWS_API_KEY,
-      })
       return NextResponse.json({ error: '服务器未配置 TRYON_AWS_API_URL / TRYON_AWS_API_KEY' }, { status: 500 })
     }
 
@@ -23,10 +19,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const body = await request.json()
+    // body 目前不需要参数，保留扩展性
+    const body = await request.json().catch(() => ({}))
 
-    // 调用 AWS API Gateway
-    const response = await fetch(`${AWS_API_URL}/upload`, {
+    const response = await fetch(`${AWS_API_URL}/brand/listAll`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -36,22 +32,16 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify(body),
     })
 
-    const data = await response.json()
-
+    const data = await response.json().catch(() => ({}))
     if (!response.ok) {
-      return NextResponse.json(
-        { error: data.error || '上传失败' },
-        { status: response.status }
-      )
+      return NextResponse.json({ error: data.error || '获取品牌列表失败' }, { status: response.status })
     }
 
     return NextResponse.json(data)
   } catch (error) {
-    console.error('Upload API error:', error)
-    return NextResponse.json(
-      { error: '服务器错误' },
-      { status: 500 }
-    )
+    console.error('Brand list API error:', error)
+    return NextResponse.json({ error: '服务器错误' }, { status: 500 })
   }
 }
+
 
