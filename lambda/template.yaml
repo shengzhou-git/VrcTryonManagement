@@ -222,6 +222,8 @@ Resources:
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref ImagesBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BrandTable
       Events:
         DeleteApi:
           Type: Api

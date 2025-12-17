@@ -503,7 +503,7 @@ export async function deleteImages(keys: string[]): Promise<void> {
 /**
  * 一键删除某个品牌下的全部图片（后端按前缀分页删除，可覆盖 >1000 张）
  */
-export async function deleteBrandImages(brandName: string): Promise<{ deletedCount: number }> {
+export async function deleteBrandImages(input: { brandName: string; brandId?: string | null }): Promise<{ deletedCount: number }> {
   const token = await getIdTokenOrThrow()
   const response = await fetch(`${API_BASE_URL}/delete`, {
     method: 'POST',
@@ -511,7 +511,7 @@ export async function deleteBrandImages(brandName: string): Promise<{ deletedCou
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ brandName }),
+    body: JSON.stringify({ brandName: input.brandName, brandId: input.brandId || undefined }),
   })
 
   const data = await response.json().catch(() => null as any)

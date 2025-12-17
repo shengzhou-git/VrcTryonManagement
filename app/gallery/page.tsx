@@ -277,7 +277,11 @@ export default function GalleryPage() {
 
     try {
       setIsBrandDeleting(true)
-      await deleteBrandImages(selectedBrand)
+      // 当前 S3 key 格式：{userId}/{brandId}/{filename}
+      // 这里用图片列表中携带的 brandId（来自 key 的第 2 段）来做“按前缀删除”，避免误用 brandName 导致删不到
+      const anyImg = allImages.find((img) => img.brand === selectedBrand)
+      const brandId = String(anyImg?.brandId || '').trim()
+      await deleteBrandImages({ brandName: selectedBrand, brandId: brandId || null })
       // 先本地移除该品牌，立即反馈；再切回“全部”
       setAllImages((prev) => prev.filter((img) => img.brand !== selectedBrand))
       setSelectedBrand(t.gallery.allBrands)

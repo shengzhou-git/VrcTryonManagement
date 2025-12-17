@@ -5,10 +5,13 @@
  */
 
 import { S3Client, DeleteObjectsCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { DynamoDBClient, DeleteItemCommand } from '@aws-sdk/client-dynamodb';
 
 const s3Client = new S3Client({ region: process.env.AWS_REGION || 'ap-northeast-1' });
+const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'ap-northeast-1' });
 
 const BUCKET_NAME = process.env.S3_BUCKET_NAME;
+const BRAND_TABLE_NAME = process.env.BRAND_TABLE_NAME;
 
 /**
  * 主处理函数
@@ -52,18 +55,13 @@ export const handler = async (event) => {
 
     // 解析请求体
     const body = JSON.parse(event.body || '{}');
-    const { keys, brandName } = body;
+    const { keys, brandName, brandId } = body;
 
     // 按用户隔离：只允许操作当前 userId 前缀下的对象
     const safeUserId = sanitizeForUrl(String(auth.userId))
     const requiredPrefix = `${safeUserId}/`
 
-    // 1) 通过 brandName 按前缀批量删除（推荐：可删除 >1000）
-    if (brandName && String(brandName).trim()) {
-      const safeBrand = sanitizeForUrl(String(brandName))
-      const prefix = `${requiredPrefix}${safeBrand}/`
-      console.log(`[PFTryonDeleteTool] 批量删除品牌 - user=${auth.userId}, brand=${brandName}, prefix=${prefix}`)
-
+    async function deleteByPrefix(prefix) {
       let continuationToken = undefined
       let deletedCount = 0
       const errors = []
@@ -81,10 +79,9 @@ export const handler = async (event) => {
         )
 
         const keysToDelete = (listRes.Contents || []).map((o) => o.Key).filter(Boolean)
-        console.log(`[PFTryonDeleteTool] list page ${loop} - found=${keysToDelete.length}, truncated=${!!listRes.IsTruncated}`)
+        console.log(`[PFTryonDeleteTool] list page ${loop} - prefix=${prefix}, found=${keysToDelete.length}, truncated=${!!listRes.IsTruncated}`)
 
         if (keysToDelete.length > 0) {
-          // 单次 DeleteObjects 最多 1000
           const delRes = await s3Client.send(
             new DeleteObjectsCommand({
               Bucket: BUCKET_NAME,
@@ -105,8 +102,58 @@ export const handler = async (event) => {
         if (!continuationToken) break
       }
 
+      return { deletedCount, errors }
+    }
+
+    // 1) 通过 brandId / brandName 按前缀批量删除（可删除 >1000）
+    // 新路径：{userId}/{brandId}/...
+    // 旧路径（兼容）：{userId}/{brandName}/...
+    if ((brandId && String(brandId).trim()) || (brandName && String(brandName).trim())) {
+      const safeBrandId = brandId ? sanitizeForUrl(String(brandId)) : ''
+      const safeBrandName = brandName ? sanitizeForUrl(String(brandName)) : ''
+      const prefixes = []
+      if (safeBrandId) prefixes.push(`${requiredPrefix}${safeBrandId}/`)
+      if (safeBrandName) prefixes.push(`${requiredPrefix}${safeBrandName}/`)
+      // 去重（brandId 可能就是 brandName 的旧值）
+      const uniq = Array.from(new Set(prefixes))
+
+      console.log(
+        `[PFTryonDeleteTool] 批量删除品牌 - user=${auth.userId}, brandName=${String(brandName || '')}, brandId=${String(brandId || '')}, prefixes=${uniq.join(',')}`
+      )
+
+      let deletedCount = 0
+      const errors = []
+      const perPrefix = []
+      for (const p of uniq) {
+        const r = await deleteByPrefix(p)
+        deletedCount += r.deletedCount
+        if (r.errors?.length) errors.push(...r.errors)
+        perPrefix.push({ prefix: p, deletedCount: r.deletedCount, errors: r.errors?.length || 0 })
+      }
+
+      // 2) 删除 DynamoDB 品牌记录（仅当 brandId 存在时）
+      let dbDeleted = false
+      if (BRAND_TABLE_NAME && safeBrandId) {
+        try {
+          await ddbClient.send(
+            new DeleteItemCommand({
+              TableName: BRAND_TABLE_NAME,
+              Key: {
+                UserId: { S: String(auth.userId) },
+                BrandId: { S: String(brandId) },
+              },
+            })
+          )
+          dbDeleted = true
+        } catch (e) {
+          console.error(
+            `[PFTryonDeleteTool] DynamoDB delete brand failed - user=${auth.userId}, brandId=${String(brandId)}, error=${e?.message || e}`
+          )
+        }
+      }
+
       const totalTime = Date.now() - startTime;
-      console.log(`[PFTryonDeleteTool] 品牌批量删除完成 - deleted=${deletedCount}, errors=${errors.length}, ms=${totalTime}`)
+      console.log(`[PFTryonDeleteTool] 品牌批量删除完成 - deleted=${deletedCount}, errors=${errors.length}, dbDeleted=${dbDeleted}, ms=${totalTime}`)
 
       return {
         statusCode: 200,
@@ -115,6 +162,8 @@ export const handler = async (event) => {
           message: `成功删除 ${deletedCount} 个文件`,
           deletedCount,
           errors,
+          perPrefix,
+          dbDeleted,
         }),
       }
     }
