@@ -117,6 +117,7 @@ export const handler = async (event) => {
         const objectBrandId = pathParts[1] || '';
         const objectFolder = pathParts[2] || '';
         const fileName = pathParts[pathParts.length - 1];
+        const lowerFileName = String(fileName || '').toLowerCase()
 
         // 二次校验：只处理目标 userId 前缀（防止前缀/配置异常导致越权）
         if (objectUserId !== safeUserId) {
@@ -126,6 +127,10 @@ export const handler = async (event) => {
 
         // gallery 只展示图片，过滤掉配置文件目录
         if (objectFolder === 'config') {
+          continue
+        }
+        // 过滤非图片文件（例如 gender-map.json / 配置 JSON）
+        if (lowerFileName.endsWith('.json')) {
           continue
         }
 

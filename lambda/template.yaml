@@ -155,6 +155,20 @@ Resources:
             Path: /brand/listAll
             Method: OPTIONS
             RestApiId: !Ref ApiGateway
+        BrandListMineApi:
+          Type: Api
+          Properties:
+            Path: /brand/list
+            Method: POST
+            RestApiId: !Ref ApiGateway
+            Auth:
+              ApiKeyRequired: true
+        BrandListMineOptions:
+          Type: Api
+          Properties:
+            Path: /brand/list
+            Method: OPTIONS
+            RestApiId: !Ref ApiGateway
         ConfigPrepareApi:
           Type: Api
           Properties:
@@ -181,6 +195,21 @@ Resources:
           Type: Api
           Properties:
             Path: /config/complete
+            Method: OPTIONS
+            RestApiId: !Ref ApiGateway
+
+        GenderMapDownloadApi:
+          Type: Api
+          Properties:
+            Path: /gender-map/download
+            Method: POST
+            RestApiId: !Ref ApiGateway
+            Auth:
+              ApiKeyRequired: true
+        GenderMapDownloadOptions:
+          Type: Api
+          Properties:
+            Path: /gender-map/download
             Method: OPTIONS
             RestApiId: !Ref ApiGateway
 

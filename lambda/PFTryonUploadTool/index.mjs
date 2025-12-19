@@ -59,14 +59,76 @@ export const handler = async (event) => {
     const isUploadPath = path.includes('/upload')
     const isConfigPath = path.includes('/config')
     const isBrandAdminPath = path.includes('/brand/')
+    const isBrandListMinePath = path.endsWith('/brand/list')
     if (isConfigPath && !isSuperAdmin) {
       return createErrorResponse(403, 'Forbidden')
     }
-    if (isBrandAdminPath && !isSuperAdmin) {
+    // /brand/listAll: 仅 SuperAdmin
+    // /brand/list: Admin/SuperAdmin（当前用户自己的品牌）
+    if (isBrandAdminPath && !isSuperAdmin && !isBrandListMinePath) {
       return createErrorResponse(403, 'Forbidden')
     }
     if (isUploadPath && !(isAdmin || isSuperAdmin)) {
       return createErrorResponse(403, 'Forbidden')
+    }
+
+    // /brand/list: Admin/SuperAdmin 获取“当前用户”的品牌列表（来自 DynamoDB 表）
+    if (path.endsWith('/brand/list')) {
+      const t0 = Date.now()
+      if (!BRAND_TABLE_NAME) return createErrorResponse(500, 'BRAND_TABLE_NAME 未配置')
+
+      const userId = String(auth.userId || '')
+      const items = []
+      let lastKey = undefined
+      let queried = 0
+
+      for (let page = 0; page < 20; page++) {
+        const resp = await ddbClient.send(
+          new QueryCommand({
+            TableName: BRAND_TABLE_NAME,
+            KeyConditionExpression: 'UserId = :userId',
+            ExpressionAttributeValues: {
+              ':userId': { S: userId },
+            },
+            ProjectionExpression: 'UserId, BrandId, BrandName, CreatedAt, UpdatedAt, UploadCount',
+            ExclusiveStartKey: lastKey,
+            Limit: 200,
+          })
+        )
+        const arr = resp?.Items || []
+        queried += arr.length
+        for (const it of arr) {
+          const uid = it?.UserId?.S || ''
+          const brandId = it?.BrandId?.S || ''
+          const brandName = it?.BrandName?.S || ''
+          if (!uid || !brandId || !brandName) continue
+          items.push({
+            userId: uid,
+            brandId,
+            brandName,
+            createdAt: it?.CreatedAt?.S || null,
+            updatedAt: it?.UpdatedAt?.S || null,
+            uploadCount: Number(it?.UploadCount?.N || 0),
+          })
+        }
+        lastKey = resp?.LastEvaluatedKey
+        if (!lastKey) break
+      }
+
+      // 默认按 UpdatedAt/CreatedAt 降序（更符合“最近使用”）
+      items.sort((a, b) => {
+        const at = Date.parse(String(a.updatedAt || a.createdAt || '')) || 0
+        const bt = Date.parse(String(b.updatedAt || b.createdAt || '')) || 0
+        if (bt !== at) return bt - at
+        return Number(b.uploadCount || 0) - Number(a.uploadCount || 0)
+      })
+
+      console.log(`[PFTryonUploadTool] brand list done - requestId=${requestId}, userId=${auth.userId}, count=${items.length}, queried=${queried}, ms=${Date.now() - t0}`)
+      return {
+        statusCode: 200,
+        headers: getCorsHeaders(),
+        body: JSON.stringify({ success: true, items }),
+      }
     }
 
     // /brand/listAll: SuperAdmin 获取全局品牌列表（来自 DynamoDB 表）
@@ -186,6 +248,44 @@ export const handler = async (event) => {
       }
     }
 
+    // /gender-map/download: SuperAdmin 下载某品牌的 gender-map.json（在 userId/brandId 目录下）
+    if (path.endsWith('/gender-map/download')) {
+      const t0 = Date.now()
+      if (!isSuperAdmin) return createErrorResponse(403, 'Forbidden')
+      const body = safeJsonParse(event.body) || {}
+      const userId = String(body?.userId || '').trim()
+      const brandId = String(body?.brandId || '').trim()
+      if (!userId) return createErrorResponse(400, 'userId 不能为空')
+      if (!brandId) return createErrorResponse(400, 'brandId 不能为空')
+
+      const safeUserId = sanitizeForUrl(userId)
+      const safeBrandId = sanitizeForUrl(brandId)
+      const key = `${safeUserId}/${safeBrandId}/gender-map.json`
+
+      try {
+        await s3Client.send(new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: key }))
+      } catch (e) {
+        console.error(`[PFTryonUploadTool] gender-map head error - requestId=${requestId}, userId=${auth.userId}, targetUserId=${userId}, brandId=${brandId}, key=${key}, error=${e?.message || e}`)
+        return createErrorResponse(404, 'gender-map.json 不存在')
+      }
+
+      // 强制浏览器下载（而不是新窗口打开预览）
+      // 通过 response-content-disposition / response-content-type 绑定到预签名 URL 上
+      const getCmd = new GetObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: key,
+        ResponseContentDisposition: 'attachment; filename="gender-map.json"',
+        ResponseContentType: 'application/json',
+      })
+      const url = await getSignedUrl(s3Client, getCmd, { expiresIn: SIGNED_URL_EXPIRATION })
+      console.log(`[PFTryonUploadTool] gender-map download ok - requestId=${requestId}, userId=${auth.userId}, targetUserId=${userId}, brandId=${brandId}, key=${key}, ms=${Date.now() - t0}`)
+      return {
+        statusCode: 200,
+        headers: getCorsHeaders(),
+        body: JSON.stringify({ success: true, key, url, expiresIn: SIGNED_URL_EXPIRATION }),
+      }
+    }
+
     // /upload/prepare: 生成 presigned PUT URL（前端直传 S3）
     if (path.endsWith('/upload/prepare')) {
       const t0 = Date.now()
@@ -274,13 +374,18 @@ export const handler = async (event) => {
       const t0 = Date.now()
       const body = safeJsonParse(event.body) || {}
       const { brandName, brandId, keys, items } = body
+      const gender = String(body?.gender || '').trim().toUpperCase()
       console.log(
-        `[PFTryonUploadTool] complete start - requestId=${requestId}, userId=${auth.userId}, brandName=${String(brandName || '')}, brandId=${String(brandId || '')}, keys=${Array.isArray(keys) ? keys.length : 0}, items=${Array.isArray(items) ? items.length : 0}`
+        `[PFTryonUploadTool] complete start - requestId=${requestId}, userId=${auth.userId}, brandName=${String(brandName || '')}, brandId=${String(brandId || '')}, gender=${gender || '(empty)'}, keys=${Array.isArray(keys) ? keys.length : 0}, items=${Array.isArray(items) ? items.length : 0}`
       )
 
       // brandId 是必需的（由 /upload/prepare 返回）
       if (!brandId || !String(brandId).trim()) {
         return createErrorResponse(400, 'brandId 不能为空')
+      }
+      // gender 必须由前端明确选择（不允许默认值）
+      if (gender !== 'F' && gender !== 'M') {
+        return createErrorResponse(400, 'gender 不能为空或不合法（仅支持 F/M）')
       }
       const keyList = Array.isArray(items) ? items.map((x) => String(x?.key || '')).filter(Boolean) : keys
       if (!keyList || !Array.isArray(keyList) || keyList.length === 0) {
@@ -336,6 +441,7 @@ export const handler = async (event) => {
             originalname: Buffer.from(String(originalName), 'utf8').toString('base64'),
             owner: Buffer.from(String(auth.userId), 'utf8').toString('base64'),
             uploaddate: new Date().toISOString(),
+            clothegender: String(gender),
           }
 
           const copySource = encodeS3CopySource(BUCKET_NAME, key)
@@ -366,6 +472,28 @@ export const handler = async (event) => {
 
       const successCount = results.filter((r) => r.success).length
       const failCount = results.length - successCount
+
+      // 维护 {userId}/{brandId}/gender-map.json（只记录成功的文件名，按性别分组，去重）
+      if (successCount > 0) {
+        try {
+          const safeBrandId = sanitizeForUrl(String(brandId))
+          const mapKey = `${safeUserId}/${safeBrandId}/gender-map.json`
+          const successFileNames = results
+            .filter((r) => r && r.success && r.key)
+            .map((r) => String(r.key || '').split('/').slice(-1)[0])
+            .filter(Boolean)
+          await updateGenderMapJson({
+            bucket: BUCKET_NAME,
+            key: mapKey,
+            gender,
+            fileNames: successFileNames,
+          })
+          console.log(`[PFTryonUploadTool] gender-map updated - requestId=${requestId}, userId=${auth.userId}, brandId=${brandId}, key=${mapKey}, added=${successFileNames.length}`)
+        } catch (e) {
+          console.error(`[PFTryonUploadTool] gender-map update failed - requestId=${requestId}, userId=${auth.userId}, brandId=${brandId}, error=${e?.message || e}`)
+          // 不影响主流程返回
+        }
+      }
 
       // 更新品牌上传计数（DynamoDB）
       if (BRAND_TABLE_NAME && successCount > 0) {
@@ -611,6 +739,59 @@ function safeJsonParse(s) {
   } catch {
     return null
   }
+}
+
+async function streamToString(body) {
+  if (!body) return ''
+  if (typeof body === 'string') return body
+  // AWS SDK v3: Body is a stream (Node.js Readable)
+  const chunks = []
+  for await (const chunk of body) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+async function updateGenderMapJson(input) {
+  const bucket = input?.bucket
+  const key = input?.key
+  const gender = String(input?.gender || '').toUpperCase()
+  const fileNames = Array.isArray(input?.fileNames) ? input.fileNames.map((x) => String(x || '').trim()).filter(Boolean) : []
+  if (!bucket) throw new Error('bucket is required')
+  if (!key) throw new Error('key is required')
+  if (gender !== 'F' && gender !== 'M') throw new Error('gender invalid')
+  if (fileNames.length === 0) return
+
+  let cur = { F: [], M: [] }
+  try {
+    const resp = await s3Client.send(new GetObjectCommand({ Bucket: bucket, Key: key }))
+    const txt = await streamToString(resp?.Body)
+    const parsed = txt ? JSON.parse(txt) : null
+    if (parsed && typeof parsed === 'object') {
+      const F = Array.isArray(parsed.F) ? parsed.F.map((x) => String(x || '')).filter(Boolean) : []
+      const M = Array.isArray(parsed.M) ? parsed.M.map((x) => String(x || '')).filter(Boolean) : []
+      cur = { F, M }
+    }
+  } catch (e) {
+    const msg = String(e?.name || e?.code || e?.message || '')
+    // 不存在就初始化；其他错误抛出
+    if (!msg.includes('NoSuchKey') && !msg.includes('NotFound') && !msg.includes('404')) {
+      throw e
+    }
+  }
+
+  const set = new Set((cur[gender] || []).map((x) => String(x)))
+  for (const f of fileNames) set.add(f)
+  cur[gender] = Array.from(set)
+
+  await s3Client.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: JSON.stringify(cur, null, 2),
+      ContentType: 'application/json',
+    })
+  )
 }
 
 

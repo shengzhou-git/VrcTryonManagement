@@ -107,6 +107,7 @@ export type UploadFileProgressEvent = {
 export type UploadImagesOptions = {
   onFileProgress?: (e: UploadFileProgressEvent) => void
   concurrency?: number
+  gender?: 'F' | 'M'
 }
 
 export type UploadJsonOptions = {
@@ -263,6 +264,7 @@ export async function uploadImages(
             body: JSON.stringify({
               brandName,
               brandId, // 传递 brandId 给 complete
+              gender: options.gender,
               items: [{ key: item.key, fileName, mimeType: localFile.type || undefined }]
             }),
           }, { retries: 2, baseDelayMs: 500 })
@@ -340,6 +342,25 @@ export async function listAllBrandsForSuperAdmin(): Promise<BrandItem[]> {
 }
 
 /**
+ * 获取“当前用户”的品牌列表（Admin/SuperAdmin）
+ */
+export async function listBrandsForCurrentUser(): Promise<BrandItem[]> {
+  const token = await getIdTokenOrThrow()
+  const resp = await fetch(`${API_BASE_URL}/brand/list-mine`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({}),
+  })
+  const data = (await resp.json().catch(() => null)) as any
+  if (!resp.ok) throw new Error(data?.error || '获取品牌列表失败')
+  const items = Array.isArray(data?.items) ? data.items : []
+  return items as BrandItem[]
+}
+
+/**
  * 上传品牌配置 JSON（仅 SuperAdmin）
  * 路径：{userId}/{brandId}/config/<filename>.json
  */
@@ -398,6 +419,31 @@ export async function uploadBrandConfigJson(
 
   options.onProgress?.(100)
   return { key: completeData.key, url: completeData.url }
+}
+
+/**
+ * SuperAdmin：下载某品牌的 gender-map.json（返回预签名 URL）
+ * 路径：{userId}/{brandId}/gender-map.json
+ */
+export async function downloadGenderMapJsonForSuperAdmin(target: { userId: string; brandId: string }): Promise<{ key: string; url: string; expiresIn?: number }> {
+  const token = await getIdTokenOrThrow()
+  const resp = await fetchWithRetry(
+    `${API_BASE_URL}/gender-map/download`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ userId: target.userId, brandId: target.brandId }),
+    },
+    { retries: 2, baseDelayMs: 500 }
+  )
+
+  const data = (await resp.json().catch(() => null)) as any
+  if (!resp.ok) throw new Error(data?.error || '下载失败')
+  if (!data?.url || !data?.key) throw new Error('下载失败：返回数据不完整')
+  return { key: String(data.key), url: String(data.url), expiresIn: data.expiresIn ? Number(data.expiresIn) : undefined }
 }
 
 /**

@@ -15,6 +15,7 @@ import { authCheck, hasGroup, type CognitoUserInfo } from '@/lib/cognito-auth'
 import { useEffect } from 'react'
 import { useLanguage } from '@/lib/i18n/LanguageContext'
 import AppNav from '@/components/AppNav'
+import type { BrandItem } from '@/lib/api'
 
 interface UploadFile {
   file: File
@@ -28,6 +29,11 @@ export default function UploadPage() {
   const router = useRouter()
   const { t } = useLanguage()
   const [brandName, setBrandName] = useState('')
+  const [brandMode, setBrandMode] = useState<'select' | 'new'>('new')
+  const [brands, setBrands] = useState<BrandItem[]>([])
+  const [selectedBrandId, setSelectedBrandId] = useState<string>('')
+  const [isBrandLoading, setIsBrandLoading] = useState(false)
+  const [gender, setGender] = useState<'F' | 'M' | null>(null)
   const [files, setFiles] = useState<UploadFile[]>([])
   const [isDragging, setIsDragging] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
@@ -49,6 +55,43 @@ export default function UploadPage() {
       }
       setUserinfo(userinfo)
       setIsAuthReady(true)
+
+      // 加载“当前用户”的品牌列表：有品牌就默认选择，无需重复输入
+      try {
+        setIsBrandLoading(true)
+        const { listBrandsForCurrentUser } = await import('@/lib/api')
+        const list = await listBrandsForCurrentUser()
+        setBrands(list)
+
+        if (list.length > 0) {
+          const toTs = (s?: string | null) => {
+            if (!s) return 0
+            const n = Date.parse(String(s))
+            return Number.isFinite(n) ? n : 0
+          }
+          const latest = [...list].sort((a, b) => {
+            const at = toTs(a.updatedAt) || toTs(a.createdAt)
+            const bt = toTs(b.updatedAt) || toTs(b.createdAt)
+            if (bt !== at) return bt - at
+            return Number(b.uploadCount || 0) - Number(a.uploadCount || 0)
+          })[0]
+          if (latest?.brandId && latest?.brandName) {
+            setBrandMode('select')
+            setSelectedBrandId(latest.brandId)
+            setBrandName(latest.brandName)
+          } else {
+            setBrandMode('new')
+          }
+        } else {
+          setBrandMode('new')
+        }
+      } catch (e) {
+        console.error('Failed to load brands for current user:', e)
+        // 拉取失败不阻塞上传：允许手动输入新品牌
+        setBrandMode('new')
+      } finally {
+        setIsBrandLoading(false)
+      }
     })()
   }, [router])
 
@@ -130,6 +173,11 @@ export default function UploadPage() {
       return
     }
 
+    if (!gender) {
+      alert(t.upload.genderRequired)
+      return
+    }
+
     if (files.length === 0) {
       alert(t.upload.filesRequired)
       return
@@ -154,6 +202,7 @@ export default function UploadPage() {
       // 开始上传：实时回调每个文件的进度和状态
       const response = await uploadImages(brandName, fileList, {
         concurrency: 3, // 同时上传 3 个文件
+        gender,
         onFileProgress: (e) => {
           setFiles((prev) => {
             // 通过 fileKey 或 fileName 找到对应的文件
@@ -235,6 +284,8 @@ export default function UploadPage() {
       alert(`${t.upload.uploadFailed}：${error instanceof Error ? error.message : t.upload.unknownError}`)
     } finally {
       setIsUploading(false)
+      // 每次上传结束后必须重新选择性别
+      setGender(null)
     }
   }
 
@@ -274,19 +325,160 @@ export default function UploadPage() {
           </div>
 
           <div className="space-y-6">
-            {/* 品牌名称输入 */}
+            {/* 品牌：优先选择已有品牌，必要时再新建 */}
             <div className="bg-white rounded-2xl shadow-lg p-6 animate-slide-up">
-              <label className="block mb-2 text-sm font-semibold text-slate-700">
-                {t.upload.brandName} <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={brandName}
-                onChange={(e) => setBrandName(e.target.value)}
-                placeholder={t.upload.brandPlaceholder}
-                className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:border-primary-500 focus:ring-2 focus:ring-primary-200 outline-none transition-all text-slate-900 placeholder-slate-400"
-                disabled={isUploading}
-              />
+              <div className="flex items-center justify-between gap-4 mb-3">
+                <label className="text-sm font-semibold text-slate-700">
+                  {t.upload.brandName} <span className="text-red-500">*</span>
+                </label>
+
+                {(brands.length > 0 || isBrandLoading) && (
+                  <div className="inline-flex items-center gap-2">
+                    {isBrandLoading && (
+                      <div className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500">
+                        <span className="w-4 h-4 border-2 border-slate-300 border-t-transparent rounded-full animate-spin" />
+                        <span>加载品牌中…</span>
+                      </div>
+                    )}
+                    <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
+                    <button
+                      type="button"
+                      disabled={isUploading || isBrandLoading}
+                      onClick={() => setBrandMode('select')}
+                      className={[
+                        'px-3 py-2 rounded-lg text-sm font-semibold transition-colors',
+                        brandMode === 'select'
+                          ? 'bg-primary-600 text-white shadow-sm'
+                          : 'text-slate-700 hover:text-slate-900 hover:bg-white/70',
+                        isUploading ? 'opacity-60 cursor-not-allowed' : '',
+                        isBrandLoading ? 'opacity-60 cursor-not-allowed' : '',
+                      ].join(' ')}
+                    >
+                      {t.upload.brandModeExisting}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isUploading || isBrandLoading}
+                      onClick={() => {
+                        setBrandMode('new')
+                        setSelectedBrandId('')
+                        setBrandName('')
+                      }}
+                      className={[
+                        'px-3 py-2 rounded-lg text-sm font-semibold transition-colors',
+                        brandMode === 'new'
+                          ? 'bg-primary-600 text-white shadow-sm'
+                          : 'text-slate-700 hover:text-slate-900 hover:bg-white/70',
+                        isUploading ? 'opacity-60 cursor-not-allowed' : '',
+                        isBrandLoading ? 'opacity-60 cursor-not-allowed' : '',
+                      ].join(' ')}
+                    >
+                      {t.upload.brandModeNew}
+                    </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {brandMode === 'select' && brands.length > 0 ? (
+                <>
+                  <div>
+                    <div className="text-xs font-semibold text-slate-500 mb-2">
+                      {t.upload.brandSelectLabel}
+                    </div>
+                    <select
+                      value={selectedBrandId}
+                      onChange={(e) => {
+                        const id = e.target.value
+                        setSelectedBrandId(id)
+                        if (!id) {
+                          setBrandName('')
+                          return
+                        }
+                        const b = brands.find((x) => x.brandId === id)
+                        if (b?.brandName) setBrandName(b.brandName)
+                      }}
+                      className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:border-primary-500 focus:ring-2 focus:ring-primary-200 outline-none transition-all bg-white text-slate-900"
+                      disabled={isUploading || isBrandLoading}
+                    >
+                      <option value="">{t.upload.brandSelectPlaceholder}</option>
+                      {brands.map((b) => (
+                        <option key={b.brandId} value={b.brandId}>
+                          {b.brandName}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="mt-2 text-sm text-slate-500">
+                      {t.upload.brandSelectHint}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    value={brandName}
+                    onChange={(e) => setBrandName(e.target.value)}
+                    placeholder={t.upload.brandPlaceholder}
+                    className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:border-primary-500 focus:ring-2 focus:ring-primary-200 outline-none transition-all text-slate-900 placeholder-slate-400"
+                    disabled={isUploading}
+                  />
+                  {/* <p className="mt-2 text-sm text-slate-500">
+                    {t.upload.brandNewHint}
+                  </p> */}
+                </>
+              )}
+            </div>
+
+            {/* 性别选择（必选，每次上传前必须手动选择） */}
+            <div className="bg-white rounded-2xl shadow-lg p-6 animate-slide-up">
+              <div className="flex items-center justify-between mb-3">
+                <label className="text-sm font-semibold text-slate-700">
+                  {t.upload.genderLabel} <span className="text-red-500">*</span>
+                </label>
+                {gender && (
+                  <span className="text-xs font-semibold text-slate-500">
+                    {gender === 'F' ? t.upload.genderFemale : t.upload.genderMale}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setGender('F')}
+                  disabled={isUploading}
+                  className={[
+                    'flex-1 px-4 py-3 rounded-xl border-2 transition-all font-semibold',
+                    gender === 'F'
+                      ? 'border-primary-500 bg-primary-50 text-primary-700 shadow-sm'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
+                    isUploading ? 'opacity-60 cursor-not-allowed' : '',
+                  ].join(' ')}
+                >
+                  {t.upload.genderFemale}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setGender('M')}
+                  disabled={isUploading}
+                  className={[
+                    'flex-1 px-4 py-3 rounded-xl border-2 transition-all font-semibold',
+                    gender === 'M'
+                      ? 'border-primary-500 bg-primary-50 text-primary-700 shadow-sm'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
+                    isUploading ? 'opacity-60 cursor-not-allowed' : '',
+                  ].join(' ')}
+                >
+                  {t.upload.genderMale}
+                </button>
+              </div>
+
+              {!gender && (
+                <p className="mt-3 text-sm text-red-600">
+                  {t.upload.genderRequired}
+                </p>
+              )}
             </div>
 
             {/* 拖放上传区域 */}
@@ -364,6 +556,7 @@ export default function UploadPage() {
                       onClick={() => {
                         files.forEach(f => URL.revokeObjectURL(f.preview))
                         setFiles([])
+                        setGender(null)
                       }}
                       className="text-sm text-red-500 hover:text-red-700 transition-colors"
                     >
@@ -436,7 +629,10 @@ export default function UploadPage() {
             {files.length > 0 && (
               <div className="flex justify-end space-x-4 animate-fade-in">
                 <button
-                  onClick={() => router.push('/')}
+                  onClick={() => {
+                    setGender(null)
+                    router.push('/')
+                  }}
                   disabled={isUploading}
                   className="px-8 py-3 border-2 border-slate-300 text-slate-700 rounded-xl hover:bg-slate-50 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                 >
@@ -444,7 +640,7 @@ export default function UploadPage() {
                 </button>
                 <button
                   onClick={handleUpload}
-                  disabled={isUploading || !brandName.trim()}
+                  disabled={isUploading || !brandName.trim() || !gender}
                   className="px-8 py-3 bg-gradient-to-r from-primary-500 to-primary-600 text-white rounded-xl hover:from-primary-600 hover:to-primary-700 transition-all font-medium shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
                 >
                   <Upload className="w-5 h-5" />

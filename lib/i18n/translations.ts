@@ -109,6 +109,16 @@ export interface Translations {
     dragDropHint: string
     dropToUpload: string
     cancel: string
+    genderLabel: string
+    genderFemale: string
+    genderMale: string
+    genderRequired: string
+    brandModeExisting: string
+    brandModeNew: string
+    brandSelectLabel: string
+    brandSelectPlaceholder: string
+    brandSelectHint: string
+    brandNewHint: string
   }
 
   // 图片一览页面
@@ -245,6 +255,16 @@ export const translations: Record<Language, Translations> = {
       dragDropHint: '支持拖放文件或文件夹',
       dropToUpload: '释放以上传文件',
       cancel: '取消',
+      genderLabel: '性别',
+      genderFemale: '女',
+      genderMale: '男',
+      genderRequired: '请选择性别（女/男）',
+      brandModeExisting: '选择已有品牌',
+      brandModeNew: '新建品牌',
+      brandSelectLabel: '选择品牌',
+      brandSelectPlaceholder: '请选择已有品牌…',
+      brandSelectHint: '若品牌已存在，直接选择即可，无需重复输入。',
+      brandNewHint: '新建品牌会生成新的 BrandId（首次上传该品牌时创建）。',
     },
     gallery: {
       title: '图片一览',
@@ -378,6 +398,16 @@ export const translations: Record<Language, Translations> = {
       dragDropHint: 'Support drag and drop files or folder',
       dropToUpload: 'Drop to upload files',
       cancel: 'Cancel',
+      genderLabel: 'Gender',
+      genderFemale: 'Female',
+      genderMale: 'Male',
+      genderRequired: 'Please select gender (Female/Male)',
+      brandModeExisting: 'Use existing brand',
+      brandModeNew: 'Create new brand',
+      brandSelectLabel: 'Select brand',
+      brandSelectPlaceholder: 'Select an existing brand…',
+      brandSelectHint: 'If the brand already exists, just select it—no need to type again.',
+      brandNewHint: 'Creating a new brand will generate a new BrandId (created on first upload).',
     },
     gallery: {
       title: 'Image Gallery',
@@ -511,6 +541,16 @@ export const translations: Record<Language, Translations> = {
       dragDropHint: 'ファイルまたはフォルダのドラッグ＆ドロップに対応',
       dropToUpload: 'ドロップしてアップロード',
       cancel: 'キャンセル',
+      genderLabel: '性別',
+      genderFemale: '女',
+      genderMale: '男',
+      genderRequired: '性別（女/男）を選択してください',
+      brandModeExisting: '既存ブランドを選択',
+      brandModeNew: '新規ブランド',
+      brandSelectLabel: 'ブランド選択',
+      brandSelectPlaceholder: '既存ブランドを選択…',
+      brandSelectHint: '既に存在するブランドは選ぶだけでOK（再入力不要）。',
+      brandNewHint: '新規ブランドは新しい BrandId を生成します（初回アップロード時に作成）。',
     },
     gallery: {
       title: '画像一覧',

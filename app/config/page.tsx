@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, Braces, UploadCloud, FileJson, ExternalLink, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { ArrowLeft, Braces, UploadCloud, FileJson, ExternalLink, AlertCircle, CheckCircle2, Download } from 'lucide-react'
 import AppNav from '@/components/AppNav'
 import { authCheck, hasGroup, type CognitoUserInfo } from '@/lib/cognito-auth'
 import { useLanguage } from '@/lib/i18n/LanguageContext'
@@ -15,19 +15,36 @@ type UploadState =
   | { status: 'success'; key: string; url?: string }
   | { status: 'error'; message: string }
 
+type GenderMapState =
+  | { status: 'idle' }
+  | { status: 'downloading' }
+  | { status: 'success'; key: string; url: string }
+  | { status: 'error'; message: string }
+
 export default function ConfigPage() {
   const router = useRouter()
   const { t } = useLanguage()
 
   const [userinfo, setUserinfo] = useState<CognitoUserInfo | null>(null)
   const [brands, setBrands] = useState<BrandItem[]>([])
-  const [selectedBrandId, setSelectedBrandId] = useState<string>('') // brandId
+  const [selectedBrandKey, setSelectedBrandKey] = useState<string>('') // `${userId}::${brandId}`
   const [file, setFile] = useState<File | null>(null)
   const [dragging, setDragging] = useState(false)
   const [state, setState] = useState<UploadState>({ status: 'idle' })
+  const [genderMapState, setGenderMapState] = useState<GenderMapState>({ status: 'idle' })
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const isSuperAdmin = hasGroup(userinfo, 'SuperAdmin')
+
+  const selectedBrand = useMemo(() => {
+    const raw = String(selectedBrandKey || '')
+    const i = raw.indexOf('::')
+    if (i < 0) return { userId: '', brandId: '' }
+    return { userId: raw.slice(0, i), brandId: raw.slice(i + 2) }
+  }, [selectedBrandKey])
+
+  const selectedBrandId = selectedBrand.brandId
+  const selectedBrandUserId = selectedBrand.userId
 
   const canSubmit = useMemo(() => {
     return isSuperAdmin && !!file && !!selectedBrandId && state.status !== 'uploading'
@@ -96,6 +113,31 @@ export default function ConfigPage() {
     }
   }
 
+  const onDownloadGenderMap = async () => {
+    if (!selectedBrandId || !selectedBrandUserId) {
+      setGenderMapState({ status: 'error', message: '请先选择品牌' })
+      return
+    }
+    setGenderMapState({ status: 'downloading' })
+    try {
+      const { downloadGenderMapJsonForSuperAdmin } = await import('@/lib/api')
+      const res = await downloadGenderMapJsonForSuperAdmin({ userId: selectedBrandUserId, brandId: selectedBrandId })
+      setGenderMapState({ status: 'success', key: res.key, url: res.url })
+      // 触发下载（配合后端预签名 URL 的 Content-Disposition: attachment）
+      const a = document.createElement('a')
+      a.href = res.url
+      a.rel = 'noreferrer'
+      a.target = '_self'
+      a.download = 'gender-map.json'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '下载失败'
+      setGenderMapState({ status: 'error', message: msg })
+    }
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
       <AppNav
@@ -133,13 +175,17 @@ export default function ConfigPage() {
                 <div className="rounded-xl bg-slate-50 border border-slate-200 p-4">
                   <div className="text-xs font-semibold text-slate-500 mb-2">选择品牌（BrandName / BrandId）</div>
                   <select
-                    value={selectedBrandId}
-                    onChange={(e) => setSelectedBrandId(e.target.value)}
+                    value={selectedBrandKey}
+                    onChange={(e) => {
+                      setSelectedBrandKey(e.target.value)
+                      setState({ status: 'idle' })
+                      setGenderMapState({ status: 'idle' })
+                    }}
                     className="w-full px-3 py-2.5 border-2 border-slate-200 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none bg-white text-slate-900"
                   >
                     <option value="">请选择…</option>
                     {brands.map((b) => (
-                      <option key={b.brandId} value={b.brandId}>
+                      <option key={`${b.userId}::${b.brandId}`} value={`${b.userId}::${b.brandId}`}>
                         {b.brandName} ({b.brandId})
                       </option>
                     ))}
@@ -274,6 +320,69 @@ export default function ConfigPage() {
                       <div className="min-w-0">
                         <div className="font-semibold">上传失败</div>
                         <div className="text-sm text-red-800 mt-1">{state.message}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* gender-map.json 下载区 */}
+            <div className="border-t border-slate-100 p-6 bg-slate-50/40">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-sm font-bold text-slate-900">性别映射（gender-map.json）</div>
+                  <div className="text-sm text-slate-600 mt-1">
+                    仅 SuperAdmin 可下载。文件位于 <span className="font-mono">{'{userId}/{brandId}/gender-map.json'}</span>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-2">
+                    当前目标：{' '}
+                    <span className="font-mono">
+                      {selectedBrandId && selectedBrandUserId ? `${selectedBrandUserId}/${selectedBrandId}/gender-map.json` : '请先选择品牌'}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={!isSuperAdmin || !selectedBrandId || !selectedBrandUserId || genderMapState.status === 'downloading'}
+                  onClick={onDownloadGenderMap}
+                  className="shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold"
+                >
+                  <Download className="w-4 h-4" />
+                  {genderMapState.status === 'downloading' ? '下载中…' : '下载 JSON'}
+                </button>
+              </div>
+
+              <div className="mt-4">
+                {genderMapState.status === 'success' && (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-900">
+                    <div className="flex items-start gap-3">
+                      <CheckCircle2 className="w-5 h-5 mt-0.5" />
+                      <div className="min-w-0">
+                        <div className="font-semibold">已生成下载链接</div>
+                        <div className="text-sm text-emerald-800 mt-1 break-all">
+                          Key：<span className="font-mono">{genderMapState.key}</span>
+                        </div>
+                        <a
+                          href={genderMapState.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-2 mt-3 text-sm font-semibold text-emerald-900 hover:underline"
+                        >
+                          打开下载 <ExternalLink className="w-4 h-4" />
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {genderMapState.status === 'error' && (
+                  <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-red-900">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 mt-0.5" />
+                      <div className="min-w-0">
+                        <div className="font-semibold">下载失败</div>
+                        <div className="text-sm text-red-800 mt-1">{genderMapState.message}</div>
                       </div>
                     </div>
                   </div>
