@@ -224,6 +224,8 @@ Resources:
       Policies:
         - S3ReadPolicy:
             BucketName: !Ref ImagesBucket
+        - DynamoDBReadPolicy:
+            TableName: !Ref BrandTable
       Events:
         ListApi:
           Type: Api

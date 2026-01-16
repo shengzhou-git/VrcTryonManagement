@@ -114,14 +114,14 @@ export default function ConfigPage() {
   }
 
   const onDownloadGenderMap = async () => {
-    if (!selectedBrandId || !selectedBrandUserId) {
+    if (!selectedBrandId) {
       setGenderMapState({ status: 'error', message: '请先选择品牌' })
       return
     }
     setGenderMapState({ status: 'downloading' })
     try {
       const { downloadGenderMapJsonForSuperAdmin } = await import('@/lib/api')
-      const res = await downloadGenderMapJsonForSuperAdmin({ userId: selectedBrandUserId, brandId: selectedBrandId })
+      const res = await downloadGenderMapJsonForSuperAdmin({ brandId: selectedBrandId })
       setGenderMapState({ status: 'success', key: res.key, url: res.url })
       // 触发下载（配合后端预签名 URL 的 Content-Disposition: attachment）
       const a = document.createElement('a')
@@ -333,18 +333,18 @@ export default function ConfigPage() {
                 <div>
                   <div className="text-sm font-bold text-slate-900">性别映射（gender-map.json）</div>
                   <div className="text-sm text-slate-600 mt-1">
-                    仅 SuperAdmin 可下载。文件位于 <span className="font-mono">{'{userId}/{brandId}/gender-map.json'}</span>
+                    仅 SuperAdmin 可下载。文件位于 <span className="font-mono">{'{brandId}/gender-map.json'}</span>
                   </div>
                   <div className="text-xs text-slate-500 mt-2">
                     当前目标：{' '}
                     <span className="font-mono">
-                      {selectedBrandId && selectedBrandUserId ? `${selectedBrandUserId}/${selectedBrandId}/gender-map.json` : '请先选择品牌'}
+                      {selectedBrandId ? `${selectedBrandId}/gender-map.json` : '请先选择品牌'}
                     </span>
                   </div>
                 </div>
                 <button
                   type="button"
-                  disabled={!isSuperAdmin || !selectedBrandId || !selectedBrandUserId || genderMapState.status === 'downloading'}
+                  disabled={!isSuperAdmin || !selectedBrandId || genderMapState.status === 'downloading'}
                   onClick={onDownloadGenderMap}
                   className="shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-semibold"
                 >

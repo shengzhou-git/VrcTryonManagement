@@ -5,7 +5,7 @@
  */
 
 import { S3Client, DeleteObjectsCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
-import { DynamoDBClient, DeleteItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, DeleteItemCommand, QueryCommand } from '@aws-sdk/client-dynamodb';
 
 const s3Client = new S3Client({ region: process.env.AWS_REGION || 'ap-northeast-1' });
 const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'ap-northeast-1' });
@@ -45,7 +45,8 @@ export const handler = async (event) => {
         body: JSON.stringify({ error: 'Unauthorized' }),
       }
     }
-    if (!auth.groups?.includes('Admin')) {
+    const ok = auth.groups?.includes('Admin') || auth.groups?.includes('SuperAdmin')
+    if (!ok) {
       return {
         statusCode: 403,
         headers: getCorsHeaders(),
@@ -57,9 +58,35 @@ export const handler = async (event) => {
     const body = JSON.parse(event.body || '{}');
     const { keys, brandName, brandId } = body;
 
-    // 按用户隔离：只允许操作当前 userId 前缀下的对象
     const safeUserId = sanitizeForUrl(String(auth.userId))
-    const requiredPrefix = `${safeUserId}/`
+
+    async function getBrandIdsForUser(userId) {
+      if (!BRAND_TABLE_NAME) return []
+      const out = []
+      let lastKey = undefined
+      for (let page = 0; page < 50; page++) {
+        const resp = await ddbClient.send(
+          new QueryCommand({
+            TableName: BRAND_TABLE_NAME,
+            KeyConditionExpression: 'UserId = :userId',
+            ExpressionAttributeValues: { ':userId': { S: String(userId) } },
+            ProjectionExpression: 'BrandId',
+            ExclusiveStartKey: lastKey,
+            Limit: 200,
+          })
+        )
+        const arr = resp?.Items || []
+        for (const it of arr) {
+          const bid = it?.BrandId?.S || ''
+          if (bid) out.push(String(bid))
+        }
+        lastKey = resp?.LastEvaluatedKey
+        if (!lastKey) break
+      }
+      return out
+    }
+
+    const ownedBrandIds = new Set(await getBrandIdsForUser(auth.userId))
 
     async function deleteByPrefix(prefix) {
       let continuationToken = undefined
@@ -106,14 +133,25 @@ export const handler = async (event) => {
     }
 
     // 1) 通过 brandId / brandName 按前缀批量删除（可删除 >1000）
-    // 新路径：{userId}/{brandId}/...
-    // 旧路径（兼容）：{userId}/{brandName}/...
+    // 新路径：{brandId}/...
+    // 旧路径（兼容）：{userId}/{brandId}/... 或 {userId}/{brandName}/...
     if ((brandId && String(brandId).trim()) || (brandName && String(brandName).trim())) {
       const safeBrandId = brandId ? sanitizeForUrl(String(brandId)) : ''
       const safeBrandName = brandName ? sanitizeForUrl(String(brandName)) : ''
       const prefixes = []
-      if (safeBrandId) prefixes.push(`${requiredPrefix}${safeBrandId}/`)
-      if (safeBrandName) prefixes.push(`${requiredPrefix}${safeBrandName}/`)
+      if (safeBrandId) {
+        // brandId 归属校验（普通 Admin 只允许删自己的品牌）
+        if (!auth.groups?.includes('SuperAdmin') && !ownedBrandIds.has(String(brandId))) {
+          return {
+            statusCode: 403,
+            headers: getCorsHeaders(),
+            body: JSON.stringify({ error: 'Forbidden' }),
+          }
+        }
+        prefixes.push(`${safeBrandId}/`) // 新结构
+        prefixes.push(`${safeUserId}/${safeBrandId}/`) // 兼容旧结构
+      }
+      if (safeBrandName) prefixes.push(`${safeUserId}/${safeBrandName}/`) // 兼容旧结构（brandName 目录）
       // 去重（brandId 可能就是 brandName 的旧值）
       const uniq = Array.from(new Set(prefixes))
 
@@ -182,7 +220,26 @@ export const handler = async (event) => {
       };
     }
 
-    const invalidKeys = keys.filter((k) => typeof k !== 'string' || !k.startsWith(requiredPrefix))
+    const invalidKeys = []
+    for (const k of keys) {
+      if (typeof k !== 'string') {
+        invalidKeys.push(k)
+        continue
+      }
+      const key = String(k)
+      // 兼容旧结构：userId/... 仅允许当前用户前缀
+      if (key.startsWith(`${safeUserId}/`)) continue
+      // 新结构：brandId/... 仅允许属于自己的 brandId
+      const seg0 = key.split('/')[0] || ''
+      if (!seg0) {
+        invalidKeys.push(k)
+        continue
+      }
+      if (!auth.groups?.includes('SuperAdmin') && !ownedBrandIds.has(seg0)) {
+        invalidKeys.push(k)
+        continue
+      }
+    }
     if (invalidKeys.length > 0) {
       console.warn(`[PFTryonDeleteTool] 越权删除尝试：user=${auth.userId}, invalidKeys=${JSON.stringify(invalidKeys)}`)
       return {

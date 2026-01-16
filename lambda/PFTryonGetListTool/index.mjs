@@ -5,11 +5,14 @@
  */
 
 import { S3Client, ListObjectsV2Command, HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { DynamoDBClient, QueryCommand } from '@aws-sdk/client-dynamodb';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const s3Client = new S3Client({ region: process.env.AWS_REGION || 'ap-northeast-1' });
+const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || 'ap-northeast-1' });
 
 const BUCKET_NAME = process.env.S3_BUCKET_NAME;
+const BRAND_TABLE_NAME = process.env.BRAND_TABLE_NAME;
 const SIGNED_URL_EXPIRATION = parseInt(process.env.SIGNED_URL_EXPIRATION || '3600'); // 1小时
 
 /**
@@ -66,39 +69,119 @@ export const handler = async (event) => {
     
     const brand = String(body.brand || '').trim(); // 兼容：brandName 过滤（旧前端）
     const brandId = String(body.brandId || '').trim(); // 推荐：brandId 精确过滤
-    const targetUserId = String(body.userId || '').trim(); // SuperAdmin 可指定查看哪个 userId
+    const targetUserId = String(body.userId || '').trim(); // 兼容旧前端：保留但新 Key 不再依赖
     const limit = Math.max(1, Math.min(200, Number(body.limit || 60))) // 默认 60
     const cursor = body.cursor ? String(body.cursor) : null // S3 ContinuationToken
 
-    // 重要：图片 Key 格式是 userId/brandId/filename
-    // - 普通用户：只允许看自己 auth.userId
-    // - SuperAdmin：允许传入 targetUserId + brandId 来精确列出该品牌目录
-    const effectiveUserId = isSuperAdmin && targetUserId ? targetUserId : auth.userId
-    const safeUserId = sanitizeForUrl(effectiveUserId)
-    const prefix = brandId ? `${safeUserId}/${sanitizeForUrl(brandId)}/` : `${safeUserId}/`;
+    // 重要：图片 Key 格式已调整为 brandId/filename（去掉 userId 前缀）
+    // 访问控制：
+    // - SuperAdmin：可按 brandId 访问任意品牌
+    // - 普通用户：只能访问“属于自己”的 brandId（查 DynamoDB 校验/枚举）
+    const safeBrandId = brandId ? sanitizeForUrl(brandId) : ''
 
     console.log(`[PFTryonGetListTool] 请求参数 - 品牌筛选: ${brand || '全部'}`);
-    console.log(`[PFTryonGetListTool] S3 前缀: ${prefix || '(根目录)'}`);
+    console.log(`[PFTryonGetListTool] brandId: ${brandId || '(empty)'} targetUserId: ${targetUserId || '(empty)'} cursor: ${cursor || '(null)'}`);
+
+    async function listOnePrefix(prefix, continuationToken) {
+      const listCommand = new ListObjectsV2Command({
+        Bucket: BUCKET_NAME,
+        Prefix: prefix,
+        MaxKeys: limit,
+        ...(continuationToken ? { ContinuationToken: continuationToken } : {})
+      })
+      return await s3Client.send(listCommand)
+    }
+
+    async function getBrandIdsForUser(userId) {
+      if (!BRAND_TABLE_NAME) throw new Error('BRAND_TABLE_NAME 未配置')
+      const ids = []
+      let lastKey = undefined
+      for (let page = 0; page < 50; page++) {
+        const resp = await ddbClient.send(
+          new QueryCommand({
+            TableName: BRAND_TABLE_NAME,
+            KeyConditionExpression: 'UserId = :userId',
+            ExpressionAttributeValues: { ':userId': { S: String(userId) } },
+            ProjectionExpression: 'BrandId',
+            ExclusiveStartKey: lastKey,
+            Limit: 200,
+          })
+        )
+        const arr = resp?.Items || []
+        for (const it of arr) {
+          const bid = it?.BrandId?.S || ''
+          if (bid) ids.push(String(bid))
+        }
+        lastKey = resp?.LastEvaluatedKey
+        if (!lastKey) break
+      }
+      return ids
+    }
+
+    // 先确定要 list 的前缀集合
+    let prefixes = []
+    if (safeBrandId) {
+      // brandId 指定：按单个品牌列出
+      if (!isSuperAdmin) {
+        // 普通用户必须校验 brandId 归属
+        const owns = await getBrandIdsForUser(auth.userId)
+        if (!owns.includes(brandId)) {
+          return {
+            statusCode: 403,
+            headers: getCorsHeaders(),
+            body: JSON.stringify({ error: 'Forbidden' }),
+          }
+        }
+      }
+      prefixes = [`${safeBrandId}/`]
+    } else {
+      // 未指定 brandId：
+      // - SuperAdmin：避免误扫全桶，直接返回空（前端 SuperAdmin 实际总是按 brandId 访问）
+      // - 普通用户：枚举该用户拥有的 brandIds，并聚合返回（最多 limit 张）
+      if (isSuperAdmin) {
+        return {
+          statusCode: 400,
+          headers: getCorsHeaders(),
+          body: JSON.stringify({ error: 'brandId 不能为空' }),
+        }
+      }
+      const owns = await getBrandIdsForUser(auth.userId)
+      prefixes = owns.map((x) => `${sanitizeForUrl(x)}/`)
+    }
 
     // 列出 S3 对象
-    console.log(`[PFTryonGetListTool] 开始列出 S3 对象...`);
-    const listCommand = new ListObjectsV2Command({
-      Bucket: BUCKET_NAME,
-      Prefix: prefix,
-      MaxKeys: limit,
-      ...(cursor ? { ContinuationToken: cursor } : {})
-    });
-
-    const s3Data = await s3Client.send(listCommand);
-    const objectCount = s3Data.Contents?.length || 0;
+    console.log(`[PFTryonGetListTool] 开始列出 S3 对象... prefixes=${prefixes.join(',') || '(none)'}`);
+    const allObjects = []
+    let nextCursor = null
+    let hasMore = false
+    if (prefixes.length === 1) {
+      const s3Data = await listOnePrefix(prefixes[0], cursor)
+      allObjects.push(...(s3Data.Contents || []))
+      nextCursor = s3Data?.NextContinuationToken || null
+      hasMore = !!s3Data?.IsTruncated
+    } else {
+      // 多前缀聚合：不支持 cursor 分页（避免复杂度爆炸），只返回前 limit 张
+      for (const p of prefixes) {
+        if (allObjects.length >= limit) break
+        const s3Data = await listOnePrefix(p, null)
+        const arr = s3Data.Contents || []
+        for (const o of arr) {
+          allObjects.push(o)
+          if (allObjects.length >= limit) break
+        }
+      }
+      nextCursor = null
+      hasMore = false
+    }
+    const objectCount = allObjects.length
     console.log(`[PFTryonGetListTool] 找到 ${objectCount} 个对象`);
 
     // 处理结果
     const images = [];
     console.log(`[PFTryonGetListTool] 开始处理对象元数据和生成预签名 URL...`);
 
-    for (let i = 0; i < (s3Data.Contents || []).length; i++) {
-      const object = s3Data.Contents[i];
+    for (let i = 0; i < allObjects.length; i++) {
+      const object = allObjects[i];
       
       try {
         console.log(`[PFTryonGetListTool] [${i + 1}/${objectCount}] 处理: ${object.Key}`);
@@ -111,19 +194,12 @@ export const handler = async (event) => {
 
         const metadata = await s3Client.send(headCommand);
 
-        // Key 格式：userId/brandId/filename 或 userId/brandId/config/filename
+        // Key 格式：brandId/filename 或 brandId/config/filename
         const pathParts = object.Key.split('/');
-        const objectUserId = pathParts[0] || '';
-        const objectBrandId = pathParts[1] || '';
-        const objectFolder = pathParts[2] || '';
+        const objectBrandId = pathParts[0] || '';
+        const objectFolder = pathParts[1] || '';
         const fileName = pathParts[pathParts.length - 1];
         const lowerFileName = String(fileName || '').toLowerCase()
-
-        // 二次校验：只处理目标 userId 前缀（防止前缀/配置异常导致越权）
-        if (objectUserId !== safeUserId) {
-          console.warn(`[PFTryonGetListTool] 跳过非本用户对象: ${object.Key}`)
-          continue
-        }
 
         // gallery 只展示图片，过滤掉配置文件目录
         if (objectFolder === 'config') {
@@ -207,8 +283,8 @@ export const handler = async (event) => {
         images,
         total: images.length,
         brand: brand || '全部',
-        nextCursor: s3Data?.NextContinuationToken || null,
-        hasMore: !!s3Data?.IsTruncated,
+        nextCursor,
+        hasMore,
         note: `图片 URL 为临时访问链接，有效期约 ${Math.round(SIGNED_URL_EXPIRATION / 3600)} 小时`
       })
     };

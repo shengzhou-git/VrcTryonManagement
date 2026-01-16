@@ -423,9 +423,9 @@ export async function uploadBrandConfigJson(
 
 /**
  * SuperAdmin：下载某品牌的 gender-map.json（返回预签名 URL）
- * 路径：{userId}/{brandId}/gender-map.json
+ * 路径：{brandId}/gender-map.json
  */
-export async function downloadGenderMapJsonForSuperAdmin(target: { userId: string; brandId: string }): Promise<{ key: string; url: string; expiresIn?: number }> {
+export async function downloadGenderMapJsonForSuperAdmin(target: { brandId: string }): Promise<{ key: string; url: string; expiresIn?: number }> {
   const token = await getIdTokenOrThrow()
   const resp = await fetchWithRetry(
     `${API_BASE_URL}/gender-map/download`,
@@ -435,7 +435,7 @@ export async function downloadGenderMapJsonForSuperAdmin(target: { userId: strin
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ userId: target.userId, brandId: target.brandId }),
+      body: JSON.stringify({ brandId: target.brandId }),
     },
     { retries: 2, baseDelayMs: 500 }
   )
@@ -478,7 +478,7 @@ export async function listImages(brand?: string): Promise<ListImagesResponse> {
   }
 }
 
-export async function listImagesForBrandId(target: { userId: string; brandId: string }): Promise<ListImagesResponse> {
+export async function listImagesForBrandId(target: { userId?: string; brandId: string }): Promise<ListImagesResponse> {
   const token = await getIdTokenOrThrow()
   const response = await fetch(`${API_BASE_URL}/list`, {
     method: 'POST',
@@ -486,6 +486,7 @@ export async function listImagesForBrandId(target: { userId: string; brandId: st
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
+    // 新 key 结构以 brandId 为前缀；userId 仅为兼容旧接口（后端会忽略）
     body: JSON.stringify({ userId: target.userId, brandId: target.brandId, limit: 60 }),
   })
 
@@ -496,7 +497,7 @@ export async function listImagesForBrandId(target: { userId: string; brandId: st
   return data as ListImagesResponse
 }
 
-export async function listImagesForBrandIdPaged(target: { userId: string; brandId: string; limit?: number; cursor?: string | null }): Promise<ListImagesResponse & { nextCursor?: string | null; hasMore?: boolean }> {
+export async function listImagesForBrandIdPaged(target: { userId?: string; brandId: string; limit?: number; cursor?: string | null }): Promise<ListImagesResponse & { nextCursor?: string | null; hasMore?: boolean }> {
   const token = await getIdTokenOrThrow()
   const response = await fetch(`${API_BASE_URL}/list`, {
     method: 'POST',

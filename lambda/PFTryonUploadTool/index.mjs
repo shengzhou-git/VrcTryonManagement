@@ -248,24 +248,21 @@ export const handler = async (event) => {
       }
     }
 
-    // /gender-map/download: SuperAdmin 下载某品牌的 gender-map.json（在 userId/brandId 目录下）
+    // /gender-map/download: SuperAdmin 下载某品牌的 gender-map.json（在 brandId 目录下）
     if (path.endsWith('/gender-map/download')) {
       const t0 = Date.now()
       if (!isSuperAdmin) return createErrorResponse(403, 'Forbidden')
       const body = safeJsonParse(event.body) || {}
-      const userId = String(body?.userId || '').trim()
       const brandId = String(body?.brandId || '').trim()
-      if (!userId) return createErrorResponse(400, 'userId 不能为空')
       if (!brandId) return createErrorResponse(400, 'brandId 不能为空')
 
-      const safeUserId = sanitizeForUrl(userId)
       const safeBrandId = sanitizeForUrl(brandId)
-      const key = `${safeUserId}/${safeBrandId}/gender-map.json`
+      const key = `${safeBrandId}/gender-map.json`
 
       try {
         await s3Client.send(new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: key }))
       } catch (e) {
-        console.error(`[PFTryonUploadTool] gender-map head error - requestId=${requestId}, userId=${auth.userId}, targetUserId=${userId}, brandId=${brandId}, key=${key}, error=${e?.message || e}`)
+        console.error(`[PFTryonUploadTool] gender-map head error - requestId=${requestId}, userId=${auth.userId}, brandId=${brandId}, key=${key}, error=${e?.message || e}`)
         return createErrorResponse(404, 'gender-map.json 不存在')
       }
 
@@ -278,7 +275,7 @@ export const handler = async (event) => {
         ResponseContentType: 'application/json',
       })
       const url = await getSignedUrl(s3Client, getCmd, { expiresIn: SIGNED_URL_EXPIRATION })
-      console.log(`[PFTryonUploadTool] gender-map download ok - requestId=${requestId}, userId=${auth.userId}, targetUserId=${userId}, brandId=${brandId}, key=${key}, ms=${Date.now() - t0}`)
+      console.log(`[PFTryonUploadTool] gender-map download ok - requestId=${requestId}, userId=${auth.userId}, brandId=${brandId}, key=${key}, ms=${Date.now() - t0}`)
       return {
         statusCode: 200,
         headers: getCorsHeaders(),
@@ -304,7 +301,7 @@ export const handler = async (event) => {
       const brandId = await getBrandId(auth.userId, String(brandName).trim(), auth.email, auth.groups)
       console.log(`[PFTryonUploadTool] prepare brandId - requestId=${requestId}, userId=${auth.userId}, brandName=${brandName}, brandId=${brandId}`)
 
-      const safeUserId = sanitizeForUrl(String(auth.userId))
+      const safeBrandId = sanitizeForUrl(String(brandId))
 
       const items = []
       for (const f of files) {
@@ -329,11 +326,13 @@ export const handler = async (event) => {
         }
 
 
+        // 禁止重命名：保留用户上传的原始文件名（含扩展名）
+        // 仍做最小安全处理（URL 编码），但不再把文件名替换成时间戳，也不强制改成 .jpg
         const safeFileName = sanitizeFileName(name)
-        const jpgFileName = replaceFileExtToJpg(safeFileName)
-        // 使用 brandId 而不是 brandName 构建 S3 key
-        const key = `${safeUserId}/${brandId}/${jpgFileName}`
+        // 使用 brandId 构建 S3 key：{brandId}/{originalFileName}
+        const key = `${safeBrandId}/${safeFileName}`
 
+        // 允许同名覆盖：直接生成同 key 的 presigned PUT，S3 将覆盖旧对象
         // 预签名 PUT：允许前端直接上传二进制
         // 注意：浏览器端 PUT 时如果携带了额外 headers，可能导致与签名不匹配而 403
         // 这里保持签名最简（仅 Bucket/Key），避免 SignedHeaders/hoist 差异带来的失败
@@ -387,13 +386,35 @@ export const handler = async (event) => {
       if (gender !== 'F' && gender !== 'M') {
         return createErrorResponse(400, 'gender 不能为空或不合法（仅支持 F/M）')
       }
+
+      // 去掉 userId 前缀后，必须校验 brandId 属于当前用户（避免越权写入其他 brandId 目录）
+      if (!BRAND_TABLE_NAME) return createErrorResponse(500, 'BRAND_TABLE_NAME 未配置')
+      try {
+        const own = await ddbClient.send(
+          new QueryCommand({
+            TableName: BRAND_TABLE_NAME,
+            KeyConditionExpression: 'UserId = :userId AND BrandId = :brandId',
+            ExpressionAttributeValues: {
+              ':userId': { S: String(auth.userId) },
+              ':brandId': { S: String(brandId) },
+            },
+            Limit: 1,
+          })
+        )
+        if (!own?.Items || own.Items.length === 0) {
+          return createErrorResponse(403, 'Forbidden')
+        }
+      } catch (e) {
+        console.error(`[PFTryonUploadTool] complete brand ownership check failed - requestId=${requestId}, userId=${auth.userId}, brandId=${String(brandId)}, error=${e?.message || e}`)
+        return createErrorResponse(500, '品牌校验失败')
+      }
       const keyList = Array.isArray(items) ? items.map((x) => String(x?.key || '')).filter(Boolean) : keys
       if (!keyList || !Array.isArray(keyList) || keyList.length === 0) {
         return createErrorResponse(400, '请提供已上传成功的文件 keys')
       }
 
-      const safeUserId = sanitizeForUrl(String(auth.userId))
-      const requiredPrefix = `${safeUserId}/`
+      const safeBrandId = sanitizeForUrl(String(brandId))
+      const requiredPrefix = `${safeBrandId}/`
       const invalidPrefixCount = keyList.filter((k) => !String(k || '').startsWith(requiredPrefix)).length
       if (invalidPrefixCount > 0) {
         console.warn(`[PFTryonUploadTool] complete invalid keys prefix - requestId=${requestId}, userId=${auth.userId}, invalid=${invalidPrefixCount}`)
@@ -473,11 +494,10 @@ export const handler = async (event) => {
       const successCount = results.filter((r) => r.success).length
       const failCount = results.length - successCount
 
-      // 维护 {userId}/{brandId}/gender-map.json（只记录成功的文件名，按性别分组，去重）
+      // 维护 {brandId}/gender-map.json（只记录成功的文件名，按性别分组，去重）
       if (successCount > 0) {
         try {
-          const safeBrandId = sanitizeForUrl(String(brandId))
-          const mapKey = `${safeUserId}/${safeBrandId}/gender-map.json`
+          const mapKey = `${safeBrandId}/gender-map.json`
           const successFileNames = results
             .filter((r) => r && r.success && r.key)
             .map((r) => String(r.key || '').split('/').slice(-1)[0])
@@ -850,11 +870,6 @@ function sanitizeFileName(fileName) {
 
   // 清理文件名主体
   name = sanitizeForUrl(name);
-
-  // 如果文件名被完全编码（全是非ASCII字符），使用时间戳
-  if (name.length > 100 || name.includes('%')) {
-    name = Date.now().toString();
-  }
 
   return name + ext.toLowerCase();
 }
