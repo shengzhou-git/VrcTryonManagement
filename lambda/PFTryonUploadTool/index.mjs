@@ -325,10 +325,9 @@ export const handler = async (event) => {
           continue
         }
 
-
         // 禁止重命名：保留用户上传的原始文件名（含扩展名）
-        // 仍做最小安全处理（URL 编码），但不再把文件名替换成时间戳，也不强制改成 .jpg
-        const safeFileName = sanitizeFileName(name)
+        // 注意：这里不做 URL 编码（否则 % 会变成 %25），仅替换会破坏路径的字符
+        const safeFileName = sanitizeS3KeySegmentPreserveName(name)
         // 使用 brandId 构建 S3 key：{brandId}/{originalFileName}
         const key = `${safeBrandId}/${safeFileName}`
 
@@ -498,9 +497,13 @@ export const handler = async (event) => {
       if (successCount > 0) {
         try {
           const mapKey = `${safeBrandId}/gender-map.json`
+          // gender-map.json 保存“用户原始文件名”（优先使用前端上报的 fileName，而不是从 key 截取）
           const successFileNames = results
             .filter((r) => r && r.success && r.key)
-            .map((r) => String(r.key || '').split('/').slice(-1)[0])
+            .map((r) => {
+              const k = String(r.key || '')
+              return String(nameByKey.get(k) || k.split('/').slice(-1)[0] || '').trim()
+            })
             .filter(Boolean)
           await updateGenderMapJson({
             bucket: BUCKET_NAME,
@@ -872,6 +875,22 @@ function sanitizeFileName(fileName) {
   name = sanitizeForUrl(name);
 
   return name + ext.toLowerCase();
+}
+
+/**
+ * 用于 S3 key 的“文件名段”（path segment）清理：
+ * - 保留用户原始名称（包括 % 空格 括号 等）
+ * - 仅替换会破坏 key 路径结构或不可见控制字符
+ */
+function sanitizeS3KeySegmentPreserveName(fileName) {
+  let s = String(fileName || '')
+  // 禁止路径穿越/分隔：/ 与 \ 直接替换
+  s = s.replace(/[\/\\]/g, '_')
+  // 清理不可见控制字符
+  s = s.replace(/[\u0000-\u001F\u007F]/g, '_')
+  // S3 key 不建议以空格结尾（有些工具会裁剪），这里保守 trim 末尾空格
+  s = s.replace(/\s+$/g, '')
+  return s
 }
 
 function replaceFileExtToJpg(fileName) {
