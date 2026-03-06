@@ -7,10 +7,12 @@ import { Package, Shield, Braces, Image as ImageIcon, Upload as UploadIcon, User
 import LanguageSwitcher from '@/components/LanguageSwitcher'
 import { hasGroup, type CognitoUserInfo } from '@/lib/cognito-auth'
 import { useLanguage } from '@/lib/i18n/LanguageContext'
+import { useEffect, useState } from 'react'
 
 type Props = {
   userinfo?: CognitoUserInfo | null
   rightExtra?: React.ReactNode
+  hideAccount?: boolean
 }
 
 function NavLink({
@@ -40,12 +42,20 @@ function NavLink({
   )
 }
 
-export default function AppNav({ userinfo, rightExtra }: Props) {
+export default function AppNav({ userinfo, rightExtra, hideAccount }: Props) {
   const { t } = useLanguage()
   const pathname = usePathname() || '/'
+  const [isAutoLogin, setIsAutoLogin] = useState(false)
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setIsAutoLogin(sessionStorage.getItem('autologin') === 'true')
+    }
+  }, [])
 
   const isSuperAdmin = hasGroup(userinfo || null, 'SuperAdmin')
   const canUpload = hasGroup(userinfo || null, 'Admin') || isSuperAdmin
+  const shouldHideAccount = hideAccount || isAutoLogin
 
   return (
     <nav className="bg-white/90 backdrop-blur shadow-sm border-b border-slate-200 sticky top-0 z-40">
@@ -72,7 +82,9 @@ export default function AppNav({ userinfo, rightExtra }: Props) {
             {canUpload && (
               <NavLink href="/upload" active={pathname.startsWith('/upload')} icon={<UploadIcon className="w-4 h-4" />} label={t.common.upload} />
             )}
-            <NavLink href="/account" active={pathname.startsWith('/account')} icon={<UserIcon className="w-4 h-4" />} label="Account" />
+            {!shouldHideAccount && (
+              <NavLink href="/account" active={pathname.startsWith('/account')} icon={<UserIcon className="w-4 h-4" />} label="Account" />
+            )}
             {isSuperAdmin && (
               <NavLink href="/config" active={pathname.startsWith('/config')} icon={<Braces className="w-4 h-4" />} label="品牌配置" />
             )}

@@ -5,19 +5,41 @@ import { Upload, Image as ImageIcon, Package } from 'lucide-react'
 import { useLanguage } from '@/lib/i18n/LanguageContext'
 import LanguageSwitcher from '@/components/LanguageSwitcher'
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import AppNav from '@/components/AppNav'
-import { authCheck, type CognitoUserInfo } from '@/lib/cognito-auth'
+import { authCheck, signIn, type CognitoUserInfo } from '@/lib/cognito-auth'
+
+const AUTO_LOGIN_EMAIL = 'testaccount03@vrcjp.com'
+const AUTO_LOGIN_PASSWORD = 'Admin0003#!'
 
 export default function Home() {
   const { t } = useLanguage()
   const [userinfo, setUserinfo] = useState<CognitoUserInfo | null>(null)
+  const searchParams = useSearchParams()
 
   useEffect(() => {
     ;(async () => {
-      const { token, userinfo } = await authCheck()
-      if (token) setUserinfo(userinfo)
+      const hasAutoLogin = searchParams.get('autologin') !== null
+      if (hasAutoLogin) {
+        sessionStorage.setItem('autologin', 'true')
+      }
+      try {
+        // 如果已有有效会话则直接使用
+        const { token, userinfo } = await authCheck()
+        if (token) {
+          setUserinfo(userinfo)
+          return
+        }
+        // autologin 参数存在时自动登录
+        if (hasAutoLogin || sessionStorage.getItem('autologin') === 'true') {
+          const result = await signIn(AUTO_LOGIN_EMAIL, AUTO_LOGIN_PASSWORD)
+          setUserinfo(result.userinfo)
+        }
+      } catch (e) {
+        console.error('[AutoLogin] failed', e)
+      }
     })()
-  }, [])
+  }, [searchParams])
 
   return (
     <div className="min-h-screen flex flex-col">

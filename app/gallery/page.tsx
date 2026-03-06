@@ -16,6 +16,7 @@ import {
   Loader2,
   AlertCircle,
   RefreshCw,
+  Sparkles,
 } from 'lucide-react'
 import { listImages, deleteImages, deleteBrandImages, listAllBrandsForSuperAdmin, listImagesForBrandIdPaged, type ImageItem, type BrandItem } from '@/lib/api'
 import { useLanguage } from '@/lib/i18n/LanguageContext'
@@ -257,6 +258,17 @@ export default function GalleryPage() {
     !isBrandDeleting &&
     selectedBrand !== t.gallery.allBrands &&
     selectedBrandCount > 0
+
+  // 虚拟试穿入口：计算当前选中品牌的 brandId
+  const tryonBrandId = isSuperAdmin
+    ? selectedBrandKey ? selectedBrandKey.split('::')[1] : null
+    : selectedBrand !== t.gallery.allBrands
+      ? allImages.find((img) => img.brand === selectedBrand)?.brandId ?? null
+      : null
+  const TRYON_BASE = 'https://aitryon.vrcjp.cloud?reqkey=i5jyJuhloR051s184t1M5MKvGDF3PEmV'
+  const tryonUrl = tryonBrandId
+    ? `${TRYON_BASE}&brandid=${tryonBrandId}`
+    : TRYON_BASE
 
   const chunk = <T,>(arr: T[], size: number): T[][] => {
     const out: T[][] = []
@@ -536,6 +548,17 @@ export default function GalleryPage() {
                   </select>
                 )}
               </div>
+
+              {/* 虚拟试穿入口 */}
+              <a
+                href={tryonUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-lg hover:from-violet-600 hover:to-purple-700 transition-all shadow-sm font-medium whitespace-nowrap"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>虚拟试穿</span>
+              </a>
 
               {/* 品牌一键删除（仅 Admin + 选择了具体品牌） */}
               {isAdmin && selectedBrand !== t.gallery.allBrands && (
