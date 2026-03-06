@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { Upload, Image as ImageIcon } from 'lucide-react'
+import { Upload, Image as ImageIcon, Loader2 } from 'lucide-react'
 import { useLanguage } from '@/lib/i18n/LanguageContext'
 import { useEffect, useState, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
@@ -15,6 +15,7 @@ const AUTO_LOGIN_PASSWORD = 'Admin0003#!'
 function HomeContent() {
   const { t } = useLanguage()
   const [userinfo, setUserinfo] = useState<CognitoUserInfo | null>(null)
+  const [isAuthLoading, setIsAuthLoading] = useState(true)
   const searchParams = useSearchParams()
 
   // render 時に同期検出：URL に autologin があれば即 sessionStorage にセット
@@ -28,6 +29,7 @@ function HomeContent() {
 
   useEffect(() => {
     ;(async () => {
+      setIsAuthLoading(true)
       try {
         // 如果已有有效会话则直接使用
         const { token, userinfo } = await authCheck()
@@ -42,13 +44,26 @@ function HomeContent() {
         }
       } catch (e) {
         console.error('[AutoLogin] failed', e)
+      } finally {
+        setIsAuthLoading(false)
       }
     })()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
 
+  // autologin 中はフルスクリーンのローディングオーバーレイを表示
+  const showOverlay = shouldHideAccount && isAuthLoading
+
   return (
     <div className="min-h-screen flex flex-col">
+      {/* autologin ローディングオーバーレイ */}
+      {showOverlay && (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-transparent">
+          <Loader2 className="w-12 h-12 text-primary-600 animate-spin mb-4" />
+          <p className="text-slate-600 text-sm font-medium">Loading...</p>
+        </div>
+      )}
+
       <AppNav userinfo={userinfo} hideAccount={shouldHideAccount} />
 
       {/* 主内容 */}
@@ -65,8 +80,8 @@ function HomeContent() {
 
           <div className="grid md:grid-cols-2 gap-6 animate-slide-up">
             {/* 上传卡片 */}
-            <Link href="/upload">
-              <div className="group bg-white rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 p-8 cursor-pointer border-2 border-transparent hover:border-primary-500 hover:scale-105">
+            <Link href="/upload" aria-disabled={showOverlay} tabIndex={showOverlay ? -1 : undefined} onClick={(e) => showOverlay && e.preventDefault()}>
+              <div className={`group bg-white rounded-2xl shadow-lg transition-all duration-300 p-8 border-2 border-transparent ${showOverlay ? 'opacity-40 cursor-not-allowed pointer-events-none' : 'hover:shadow-2xl cursor-pointer hover:border-primary-500 hover:scale-105'}`}>
                 <div className="flex flex-col items-center text-center space-y-4">
                   <div className="w-20 h-20 bg-gradient-to-br from-primary-500 to-primary-600 rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform duration-300 shadow-lg">
                     <Upload className="w-10 h-10 text-white" />
@@ -82,8 +97,8 @@ function HomeContent() {
             </Link>
 
             {/* 浏览卡片 */}
-            <Link href="/gallery">
-              <div className="group bg-white rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 p-8 cursor-pointer border-2 border-transparent hover:border-primary-500 hover:scale-105">
+            <Link href="/gallery" aria-disabled={showOverlay} tabIndex={showOverlay ? -1 : undefined} onClick={(e) => showOverlay && e.preventDefault()}>
+              <div className={`group bg-white rounded-2xl shadow-lg transition-all duration-300 p-8 border-2 border-transparent ${showOverlay ? 'opacity-40 cursor-not-allowed pointer-events-none' : 'hover:shadow-2xl cursor-pointer hover:border-primary-500 hover:scale-105'}`}>
                 <div className="flex flex-col items-center text-center space-y-4">
                   <div className="w-20 h-20 bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform duration-300 shadow-lg">
                     <ImageIcon className="w-10 h-10 text-white" />
