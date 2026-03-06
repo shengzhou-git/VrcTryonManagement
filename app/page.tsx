@@ -17,12 +17,17 @@ function HomeContent() {
   const [userinfo, setUserinfo] = useState<CognitoUserInfo | null>(null)
   const searchParams = useSearchParams()
 
+  // render 時に同期検出：URL に autologin があれば即 sessionStorage にセット
+  const hasAutoLoginParam = searchParams.get('autologin') !== null
+  if (hasAutoLoginParam && typeof window !== 'undefined') {
+    sessionStorage.setItem('autologin', 'true')
+  }
+  const shouldHideAccount =
+    hasAutoLoginParam ||
+    (typeof window !== 'undefined' && sessionStorage.getItem('autologin') === 'true')
+
   useEffect(() => {
     ;(async () => {
-      const hasAutoLogin = searchParams.get('autologin') !== null
-      if (hasAutoLogin) {
-        sessionStorage.setItem('autologin', 'true')
-      }
       try {
         // 如果已有有效会话则直接使用
         const { token, userinfo } = await authCheck()
@@ -31,7 +36,7 @@ function HomeContent() {
           return
         }
         // autologin 参数存在时自动登录
-        if (hasAutoLogin || sessionStorage.getItem('autologin') === 'true') {
+        if (shouldHideAccount) {
           const result = await signIn(AUTO_LOGIN_EMAIL, AUTO_LOGIN_PASSWORD)
           setUserinfo(result.userinfo)
         }
@@ -39,11 +44,12 @@ function HomeContent() {
         console.error('[AutoLogin] failed', e)
       }
     })()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
 
   return (
     <div className="min-h-screen flex flex-col">
-      <AppNav userinfo={userinfo} />
+      <AppNav userinfo={userinfo} hideAccount={shouldHideAccount} />
 
       {/* 主内容 */}
       <main className="flex-1 flex items-center justify-center p-8">

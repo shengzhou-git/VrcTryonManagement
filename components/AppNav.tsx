@@ -7,8 +7,6 @@ import { Package, Shield, Braces, Image as ImageIcon, Upload as UploadIcon, User
 import LanguageSwitcher from '@/components/LanguageSwitcher'
 import { hasGroup, type CognitoUserInfo } from '@/lib/cognito-auth'
 import { useLanguage } from '@/lib/i18n/LanguageContext'
-import { useEffect, useState } from 'react'
-
 type Props = {
   userinfo?: CognitoUserInfo | null
   rightExtra?: React.ReactNode
@@ -45,13 +43,11 @@ function NavLink({
 export default function AppNav({ userinfo, rightExtra, hideAccount }: Props) {
   const { t } = useLanguage()
   const pathname = usePathname() || '/'
-  const [isAutoLogin, setIsAutoLogin] = useState(false)
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      setIsAutoLogin(sessionStorage.getItem('autologin') === 'true')
-    }
-  }, [])
+  // レイジー初期化：初回レンダリング時に sessionStorage を直接読む（useEffect 不要）
+  const isAutoLogin =
+    typeof window !== 'undefined' &&
+    sessionStorage.getItem('autologin') === 'true'
 
   const isSuperAdmin = hasGroup(userinfo || null, 'SuperAdmin')
   const canUpload = hasGroup(userinfo || null, 'Admin') || isSuperAdmin
