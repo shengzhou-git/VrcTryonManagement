@@ -300,6 +300,37 @@ export async function uploadImages(
     const success = results.filter((r) => r.success).length
     const failed = results.length - success
 
+    // 所有文件 complete 后统一更新 gender-map.json（避免并发 race condition）
+    if (success > 0 && options.gender && brandId) {
+      const successFileNames = results
+        .filter((r) => r.success && r.fileName)
+        .map((r) => r.fileName)
+        .filter(Boolean) as string[]
+      if (successFileNames.length > 0) {
+        try {
+          const gmResp = await fetchWithRetry(`${API_BASE_URL}/gender-map/update`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              brandId,
+              gender: options.gender,
+              fileNames: successFileNames,
+            }),
+          }, { retries: 2, baseDelayMs: 500 })
+          if (!gmResp.ok) {
+            const gmData = await gmResp.json().catch(() => null) as any
+            console.warn('[uploadImages] gender-map update failed:', gmData?.error || gmResp.status)
+          }
+        } catch (gmErr) {
+          // gender-map 更新失败不影响上传结果
+          console.warn('[uploadImages] gender-map update error:', gmErr)
+        }
+      }
+    }
+
     return {
       message: `上传完成：成功 ${success} 个，失败 ${failed} 个`,
       brandName,

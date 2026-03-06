@@ -213,6 +213,21 @@ Resources:
             Method: OPTIONS
             RestApiId: !Ref ApiGateway
 
+        GenderMapUpdateApi:
+          Type: Api
+          Properties:
+            Path: /gender-map/update
+            Method: POST
+            RestApiId: !Ref ApiGateway
+            Auth:
+              ApiKeyRequired: true
+        GenderMapUpdateOptions:
+          Type: Api
+          Properties:
+            Path: /gender-map/update
+            Method: OPTIONS
+            RestApiId: !Ref ApiGateway
+
   # Lambda 列表获取函数
   PFTryonGetListTool:
     Type: AWS::Serverless::Function

@@ -283,6 +283,59 @@ export const handler = async (event) => {
       }
     }
 
+    // /gender-map/update: Admin/SuperAdmin 在所有文件 complete 后统一更新 gender-map.json（避免并发 race condition）
+    if (path.endsWith('/gender-map/update')) {
+      const t0 = Date.now()
+      if (!(isAdmin || isSuperAdmin)) return createErrorResponse(403, 'Forbidden')
+      const body = safeJsonParse(event.body) || {}
+      const brandId = String(body?.brandId || '').trim()
+      const gender = String(body?.gender || '').toUpperCase()
+      const fileNames = Array.isArray(body?.fileNames) ? body.fileNames.map((x) => String(x || '').trim()).filter(Boolean) : []
+
+      if (!brandId) return createErrorResponse(400, 'brandId 不能为空')
+      if (gender !== 'F' && gender !== 'M') return createErrorResponse(400, 'gender 只能是 F 或 M')
+      if (fileNames.length === 0) return createErrorResponse(400, 'fileNames 不能为空')
+
+      // 校验品牌归属（Admin 只能操作自己的品牌）
+      if (!isSuperAdmin) {
+        if (!BRAND_TABLE_NAME) return createErrorResponse(500, 'BRAND_TABLE_NAME 未配置')
+        try {
+          const own = await ddbClient.send(
+            new QueryCommand({
+              TableName: BRAND_TABLE_NAME,
+              KeyConditionExpression: 'UserId = :userId AND BrandId = :brandId',
+              ExpressionAttributeValues: {
+                ':userId': { S: String(auth.userId) },
+                ':brandId': { S: String(brandId) },
+              },
+              Limit: 1,
+            })
+          )
+          if (!own?.Items || own.Items.length === 0) {
+            return createErrorResponse(403, 'Forbidden')
+          }
+        } catch (e) {
+          console.error(`[PFTryonUploadTool] gender-map/update brand check failed - requestId=${requestId}, userId=${auth.userId}, brandId=${brandId}, error=${e?.message || e}`)
+          return createErrorResponse(500, '品牌校验失败')
+        }
+      }
+
+      const safeBrandId = sanitizeForUrl(brandId)
+      const mapKey = `${safeBrandId}/gender-map.json`
+      try {
+        await updateGenderMapJson({ bucket: BUCKET_NAME, key: mapKey, gender, fileNames })
+        console.log(`[PFTryonUploadTool] gender-map/update ok - requestId=${requestId}, userId=${auth.userId}, brandId=${brandId}, gender=${gender}, added=${fileNames.length}, ms=${Date.now() - t0}`)
+        return {
+          statusCode: 200,
+          headers: getCorsHeaders(),
+          body: JSON.stringify({ success: true, key: mapKey, added: fileNames.length }),
+        }
+      } catch (e) {
+        console.error(`[PFTryonUploadTool] gender-map/update error - requestId=${requestId}, userId=${auth.userId}, brandId=${brandId}, error=${e?.message || e}`)
+        return createErrorResponse(500, 'gender-map 更新失败', e?.message || String(e))
+      }
+    }
+
     // /upload/prepare: 生成 presigned PUT URL（前端直传 S3）
     if (path.endsWith('/upload/prepare')) {
       const t0 = Date.now()
@@ -493,30 +546,8 @@ export const handler = async (event) => {
       const successCount = results.filter((r) => r.success).length
       const failCount = results.length - successCount
 
-      // 维护 {brandId}/gender-map.json（只记录成功的文件名，按性别分组，去重）
-      if (successCount > 0) {
-        try {
-          const mapKey = `${safeBrandId}/gender-map.json`
-          // gender-map.json 保存“用户原始文件名”（优先使用前端上报的 fileName，而不是从 key 截取）
-          const successFileNames = results
-            .filter((r) => r && r.success && r.key)
-            .map((r) => {
-              const k = String(r.key || '')
-              return String(nameByKey.get(k) || k.split('/').slice(-1)[0] || '').trim()
-            })
-            .filter(Boolean)
-          await updateGenderMapJson({
-            bucket: BUCKET_NAME,
-            key: mapKey,
-            gender,
-            fileNames: successFileNames,
-          })
-          console.log(`[PFTryonUploadTool] gender-map updated - requestId=${requestId}, userId=${auth.userId}, brandId=${brandId}, key=${mapKey}, added=${successFileNames.length}`)
-        } catch (e) {
-          console.error(`[PFTryonUploadTool] gender-map update failed - requestId=${requestId}, userId=${auth.userId}, brandId=${brandId}, error=${e?.message || e}`)
-          // 不影响主流程返回
-        }
-      }
+      // 注意：gender-map.json 的维护已移至独立的 /gender-map/update 路由，
+      // 由前端在所有文件 complete 后统一调用一次，避免并发写入时的 race condition。
 
       // 更新品牌上传计数（DynamoDB）
       if (BRAND_TABLE_NAME && successCount > 0) {
