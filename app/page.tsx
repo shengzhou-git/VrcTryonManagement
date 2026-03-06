@@ -1,10 +1,9 @@
 'use client'
 
 import Link from 'next/link'
-import { Upload, Image as ImageIcon, Package } from 'lucide-react'
+import { Upload, Image as ImageIcon } from 'lucide-react'
 import { useLanguage } from '@/lib/i18n/LanguageContext'
-import LanguageSwitcher from '@/components/LanguageSwitcher'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import AppNav from '@/components/AppNav'
 import { authCheck, signIn, type CognitoUserInfo } from '@/lib/cognito-auth'
@@ -12,7 +11,8 @@ import { authCheck, signIn, type CognitoUserInfo } from '@/lib/cognito-auth'
 const AUTO_LOGIN_EMAIL = 'testaccount03@vrcjp.com'
 const AUTO_LOGIN_PASSWORD = 'Admin0003#!'
 
-export default function Home() {
+// useSearchParams を使う部分を切り出し、Suspense でラップする
+function HomeContent() {
   const { t } = useLanguage()
   const [userinfo, setUserinfo] = useState<CognitoUserInfo | null>(null)
   const searchParams = useSearchParams()
@@ -102,5 +102,13 @@ export default function Home() {
         </div>
       </footer>
     </div>
+  )
+}
+
+export default function Home() {
+  return (
+    <Suspense>
+      <HomeContent />
+    </Suspense>
   )
 }
